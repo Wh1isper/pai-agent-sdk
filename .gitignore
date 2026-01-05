@@ -141,3 +141,5 @@ cython_debug/
 #.idea/
 
 TO-DO.json
+dev/
+pai_agent_sdk/sandbox/shell/templates/public
