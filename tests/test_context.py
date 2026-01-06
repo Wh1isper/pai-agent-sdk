@@ -312,3 +312,259 @@ async def test_multiple_contexts_share_environment(tmp_path: Path) -> None:
 
     # tmp_dir cleaned up after environment exits
     assert not saved_tmp_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_get_context_instructions_basic(tmp_path: Path) -> None:
+    """Should return XML-formatted runtime context instructions."""
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+        ) as ctx:
+            # Wait a tiny bit to get non-zero elapsed time
+            import asyncio
+
+            await asyncio.sleep(0.01)
+
+            instructions = await ctx.get_context_instructions()
+
+            # Should contain runtime-context element
+            assert "<runtime-context>" in instructions
+            assert "</runtime-context>" in instructions
+            assert "<elapsed-time>" in instructions
+
+
+@pytest.mark.asyncio
+async def test_get_context_instructions_with_model_config(tmp_path: Path) -> None:
+    """Should include model config in instructions when set."""
+    from inline_snapshot import snapshot
+
+    from pai_agent_sdk.context import ModelConfig
+
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+            model_cfg=ModelConfig(
+                context_window=200000,
+                handoff_threshold=0.5,
+            ),
+        ) as ctx:
+            instructions = await ctx.get_context_instructions()
+
+            assert instructions == snapshot("""\
+<runtime-context>
+  <elapsed-time>0.0s</elapsed-time>
+  <model-config>
+    <context-window>200000</context-window>
+  </model-config>
+</runtime-context>\
+""")
+
+
+@pytest.mark.asyncio
+async def test_get_context_instructions_with_token_usage(tmp_path: Path) -> None:
+    """Should include token usage when run_context with messages is provided."""
+    from unittest.mock import MagicMock
+
+    from inline_snapshot import snapshot
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    from pydantic_ai.usage import RequestUsage
+
+    from pai_agent_sdk.context import ModelConfig
+
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+            model_cfg=ModelConfig(
+                context_window=200000,
+                handoff_threshold=0.5,
+            ),
+        ) as ctx:
+            # Create mock run_context with messages containing usage
+            mock_run_context = MagicMock()
+            mock_run_context.deps = ctx
+            mock_run_context.metadata = {}
+            mock_run_context.messages = [
+                ModelRequest(parts=[UserPromptPart(content="Hello")]),
+                ModelResponse(
+                    parts=[TextPart(content="Hi")],
+                    usage=RequestUsage(
+                        input_tokens=100,
+                        output_tokens=50,
+                    ),
+                ),
+            ]
+
+            instructions = await ctx.get_context_instructions(mock_run_context)
+
+            assert instructions == snapshot("""\
+<runtime-context>
+  <elapsed-time>0.0s</elapsed-time>
+  <model-config>
+    <context-window>200000</context-window>
+  </model-config>
+  <token-usage>
+    <total-tokens>150</total-tokens>
+  </token-usage>
+</runtime-context>\
+""")
+
+
+@pytest.mark.asyncio
+async def test_get_context_instructions_with_handoff_warning(tmp_path: Path) -> None:
+    """Should include handoff warning when threshold exceeded and enabled."""
+    from unittest.mock import MagicMock
+
+    from inline_snapshot import snapshot
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    from pydantic_ai.usage import RequestUsage
+
+    from pai_agent_sdk.context import ModelConfig
+
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+            model_cfg=ModelConfig(
+                context_window=200000,
+                handoff_threshold=0.5,  # 50% = 100000 tokens
+            ),
+        ) as ctx:
+            # Create mock run_context with high token usage
+            mock_run_context = MagicMock()
+            mock_run_context.deps = ctx
+            mock_run_context.metadata = {"enable_handoff_tool": True}
+            mock_run_context.messages = [
+                ModelRequest(parts=[UserPromptPart(content="Hello")]),
+                ModelResponse(
+                    parts=[TextPart(content="Hi")],
+                    usage=RequestUsage(
+                        input_tokens=80000,
+                        output_tokens=30000,  # Exceeds 100000 threshold
+                    ),
+                ),
+            ]
+
+            instructions = await ctx.get_context_instructions(mock_run_context)
+
+            assert instructions == snapshot("""\
+<runtime-context>
+  <elapsed-time>0.0s</elapsed-time>
+  <model-config>
+    <context-window>200000</context-window>
+  </model-config>
+  <token-usage>
+    <total-tokens>110000</total-tokens>
+  </token-usage>
+</runtime-context>
+
+<system-reminder>
+  <item>IMPORTANT: **You have reached the handoff threshold, please calling the `handoff` tool to summarize then continue the task at the appropriate time.**</item>
+</system-reminder>\
+""")
+
+
+@pytest.mark.asyncio
+async def test_get_context_instructions_no_handoff_warning_below_threshold(tmp_path: Path) -> None:
+    """Should not include handoff warning when below threshold."""
+    from unittest.mock import MagicMock
+
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    from pydantic_ai.usage import RequestUsage
+
+    from pai_agent_sdk.context import ModelConfig
+
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+            model_cfg=ModelConfig(
+                context_window=200000,
+                handoff_threshold=0.5,
+            ),
+        ) as ctx:
+            mock_run_context = MagicMock()
+            mock_run_context.deps = ctx
+            mock_run_context.metadata = {"enable_handoff_tool": True}
+            mock_run_context.messages = [
+                ModelRequest(parts=[UserPromptPart(content="Hello")]),
+                ModelResponse(
+                    parts=[TextPart(content="Hi")],
+                    usage=RequestUsage(
+                        input_tokens=40000,
+                        output_tokens=10000,  # Below 100000 threshold
+                    ),
+                ),
+            ]
+
+            instructions = await ctx.get_context_instructions(mock_run_context)
+
+            # Should not contain system-reminder
+            assert "<system-reminder>" not in instructions
+            assert "handoff" not in instructions
+
+
+@pytest.mark.asyncio
+async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_path: Path) -> None:
+    """Should not include handoff warning when enable_handoff_tool is False."""
+    from unittest.mock import MagicMock
+
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    from pydantic_ai.usage import RequestUsage
+
+    from pai_agent_sdk.context import ModelConfig
+
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(
+            file_operator=env.file_operator,
+            shell=env.shell,
+            model_cfg=ModelConfig(
+                context_window=200000,
+                handoff_threshold=0.5,
+            ),
+        ) as ctx:
+            mock_run_context = MagicMock()
+            mock_run_context.deps = ctx
+            mock_run_context.metadata = {"enable_handoff_tool": False}  # Disabled
+            mock_run_context.messages = [
+                ModelRequest(parts=[UserPromptPart(content="Hello")]),
+                ModelResponse(
+                    parts=[TextPart(content="Hi")],
+                    usage=RequestUsage(
+                        input_tokens=80000,
+                        output_tokens=30000,  # Exceeds threshold but disabled
+                    ),
+                ),
+            ]
+
+            instructions = await ctx.get_context_instructions(mock_run_context)
+
+            # Should not contain system-reminder
+            assert "<system-reminder>" not in instructions

@@ -135,7 +135,7 @@ class RunContextMetadata(TypedDict, total=False):
                 agent = Agent(
                     'openai:gpt-4',
                     deps_type=AgentContext,
-                    tools=toolset.tools(),
+                    toolsets=[toolset],
                     history_processors=[process_handoff_message],
                     # Enable handoff tool via metadata - triggers threshold warning
                     metadata=lambda _: {'enable_handoff_tool': True},
@@ -220,7 +220,7 @@ class AgentContext(BaseModel):
 
     async def get_context_instructions(
         self,
-        run_context: RunContext | None = None,
+        run_context: "RunContext[AgentContext] | None" = None,
     ) -> str:
         """Return runtime context instructions in XML format.
 
@@ -262,7 +262,7 @@ class AgentContext(BaseModel):
         reminders: list[str] = []
 
         # Cast metadata to typed dict for type safety
-        metadata = cast(RunContextMetadata, run_context.deps.metadata if run_context and run_context.deps else {})
+        metadata = cast(RunContextMetadata, run_context.metadata if run_context and run_context.deps else {})
 
         # Handoff threshold warning
         if (
