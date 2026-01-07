@@ -66,7 +66,7 @@ import asyncio
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, TypeVar, runtime_checkable
 
 import anyio
 import pathspec
@@ -77,6 +77,33 @@ if TYPE_CHECKING:
     from typing import Self
 
 T = TypeVar("T")
+
+
+# --- Type definitions ---
+
+
+class FileStat(TypedDict):
+    """File status information."""
+
+    size: int
+    """File size in bytes."""
+    mtime: float
+    """Modification time as Unix timestamp."""
+    is_file: bool
+    """True if path is a regular file."""
+    is_dir: bool
+    """True if path is a directory."""
+
+
+class TruncatedResult(TypedDict):
+    """Result from truncate_to_tmp operation."""
+
+    content: str
+    """The truncated content."""
+    file_path: str
+    """Path to the full content file in tmp directory."""
+    message: str
+    """Message indicating truncation occurred."""
 
 
 # --- Resource Protocol and Registry ---
@@ -294,6 +321,33 @@ class TmpFileOperator(Protocol):
 
     async def copy(self, src: str, dst: str) -> None: ...
 
+    async def stat(self, path: str) -> FileStat:
+        """Get file/directory status information."""
+        ...
+
+    async def glob(self, pattern: str) -> list[str]:
+        """Find files matching glob pattern."""
+        ...
+
+    async def truncate_to_tmp(
+        self,
+        content: str,
+        filename: str,
+        max_length: int = 60000,
+    ) -> str | TruncatedResult:
+        """Truncate content and save full version to tmp file if needed.
+
+        Args:
+            content: Content to potentially truncate.
+            filename: Filename to use if saving to tmp.
+            max_length: Maximum length before truncation.
+
+        Returns:
+            Original content if under max_length, or TruncatedResult with
+            truncated content and path to full content file.
+        """
+        ...
+
     def is_managed_path(self, path: str, base_path: Path) -> tuple[bool, str]:
         """Check if path is managed by this operator.
 
@@ -434,6 +488,55 @@ class LocalTmpFileOperator:
             await anyio.to_thread.run_sync(shutil.copytree, src_resolved, dst_resolved)  # type: ignore[arg-type]
         else:
             await anyio.to_thread.run_sync(shutil.copy2, src_resolved, dst_resolved)  # type: ignore[arg-type]
+
+    async def stat(self, path: str) -> FileStat:
+        resolved = self._resolve(path)
+        st = await anyio.Path(resolved).stat()
+        return FileStat(
+            size=st.st_size,
+            mtime=st.st_mtime,
+            is_file=await anyio.Path(resolved).is_file(),
+            is_dir=await anyio.Path(resolved).is_dir(),
+        )
+
+    async def glob(self, pattern: str) -> list[str]:
+        """Find files matching glob pattern relative to tmp_dir."""
+        matches = []
+        for p in self._tmp_dir.glob(pattern):
+            try:
+                rel = p.relative_to(self._tmp_dir)
+                matches.append(str(rel))
+            except ValueError:
+                matches.append(str(p))
+        return sorted(matches)
+
+    async def truncate_to_tmp(
+        self,
+        content: str,
+        filename: str,
+        max_length: int = 60000,
+    ) -> str | TruncatedResult:
+        """Truncate content and save full version to tmp file if needed."""
+        if len(content) <= max_length:
+            return content
+
+        # Save full content to tmp file
+        file_path = self._tmp_dir / filename
+        await anyio.Path(file_path).write_text(content, encoding="utf-8")
+
+        # Truncate content
+        truncated = content[:max_length]
+        if truncated and not truncated.endswith("\n"):
+            # Try to truncate at last newline for cleaner output
+            last_newline = truncated.rfind("\n")
+            if last_newline > max_length * 0.8:  # Only if we don't lose too much
+                truncated = truncated[: last_newline + 1]
+
+        return TruncatedResult(
+            content=truncated,
+            file_path=str(file_path),
+            message=f"Content truncated. Full content saved to: {file_path}",
+        )
 
 
 class FileOperator(ABC):
@@ -608,6 +711,16 @@ class FileOperator(ABC):
         """Copy file or directory. Implement in subclass."""
         ...
 
+    @abstractmethod
+    async def _stat_impl(self, path: str) -> FileStat:
+        """Get file status. Implement in subclass."""
+        ...
+
+    @abstractmethod
+    async def _glob_impl(self, pattern: str) -> list[str]:
+        """Find files matching glob pattern. Implement in subclass."""
+        ...
+
     # --- Public methods with tmp routing ---
 
     async def read_file(
@@ -754,6 +867,42 @@ class FileOperator(ABC):
             else:
                 content = await self._read_bytes_impl(src)
                 await self._tmp_file_operator.write_file(dst_path, content)  # type: ignore[union-attr]
+
+    async def stat(self, path: str) -> FileStat:
+        """Get file/directory status information."""
+        is_tmp, routed_path = self._is_tmp_path(path)
+        if is_tmp:
+            return await self._tmp_file_operator.stat(routed_path)  # type: ignore[union-attr]
+        return await self._stat_impl(path)
+
+    async def glob(self, pattern: str) -> list[str]:
+        """Find files matching glob pattern."""
+        # Note: glob doesn't support tmp routing as patterns are relative to default_path
+        return await self._glob_impl(pattern)
+
+    async def truncate_to_tmp(
+        self,
+        content: str,
+        filename: str,
+        max_length: int = 60000,
+    ) -> str | TruncatedResult:
+        """Truncate content and save full version to tmp file if needed.
+
+        Args:
+            content: Content to potentially truncate.
+            filename: Filename to use if saving to tmp.
+            max_length: Maximum length before truncation.
+
+        Returns:
+            Original content if under max_length, or TruncatedResult with
+            truncated content and path to full content file.
+        """
+        if self._tmp_file_operator is None:
+            # No tmp configured, just truncate without saving
+            if len(content) <= max_length:
+                return content
+            return content[:max_length] + "\n... (truncated)"
+        return await self._tmp_file_operator.truncate_to_tmp(content, filename, max_length)
 
     # --- Tmp-specific convenience methods ---
 

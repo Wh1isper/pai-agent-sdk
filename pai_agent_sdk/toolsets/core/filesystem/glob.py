@@ -1,0 +1,46 @@
+"""Glob tool for file pattern matching."""
+
+from functools import cache
+from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field
+from pydantic_ai import RunContext
+
+from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.toolsets.core.base import BaseTool
+
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+@cache
+def _load_instruction() -> str:
+    """Load glob instruction from prompts/glob.md."""
+    prompt_file = _PROMPTS_DIR / "glob.md"
+    return prompt_file.read_text()
+
+
+class GlobTool(BaseTool):
+    """Tool for finding files matching glob patterns."""
+
+    name = "glob_tool"
+    description = "Find files by glob pattern. Returns paths sorted by modification time (newest first)."
+
+    def get_instruction(self, ctx: RunContext[AgentContext]) -> str | None:
+        """Load instruction from prompts/glob.md."""
+        return _load_instruction()
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        pattern: Annotated[
+            str,
+            Field(description="Glob pattern to match files (e.g. '**/*.py')"),
+        ],
+    ) -> list[str]:
+        """Find files matching the given glob pattern."""
+        file_operator = ctx.deps.file_operator
+        return await file_operator.glob(pattern)
+
+
+__all__ = ["GlobTool"]

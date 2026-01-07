@@ -15,6 +15,7 @@ import anyio
 from pai_agent_sdk.environment.base import (
     Environment,
     FileOperator,
+    FileStat,
     Shell,
     TmpFileOperator,
 )
@@ -274,6 +275,38 @@ class LocalFileOperator(FileOperator):
             raise FileOperationError("copy", src, "permission denied") from e
         except OSError as e:
             raise FileOperationError("copy", src, str(e)) from e
+
+    async def _stat_impl(self, path: str) -> FileStat:
+        """Get file/directory status information."""
+        resolved = self._resolve_path(path)
+        try:
+            apath = anyio.Path(resolved)
+            st = await apath.stat()
+            return FileStat(
+                size=st.st_size,
+                mtime=st.st_mtime,
+                is_file=await apath.is_file(),
+                is_dir=await apath.is_dir(),
+            )
+        except FileNotFoundError as e:
+            raise FileOperationError("stat", path, "file not found") from e
+        except PermissionError as e:
+            raise FileOperationError("stat", path, "permission denied") from e
+        except OSError as e:
+            raise FileOperationError("stat", path, str(e)) from e
+
+    async def _glob_impl(self, pattern: str) -> list[str]:
+        """Find files matching glob pattern."""
+        matches = []
+        for p in self._default_path.glob(pattern):
+            try:
+                rel = p.relative_to(self._default_path)
+                matches.append(str(rel))
+            except ValueError:
+                matches.append(str(p))
+        # Sort by modification time (newest first)
+        matches.sort(key=lambda x: (self._default_path / x).stat().st_mtime, reverse=True)
+        return matches
 
 
 class LocalShell(Shell):
