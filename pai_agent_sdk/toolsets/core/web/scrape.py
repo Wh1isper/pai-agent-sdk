@@ -82,13 +82,18 @@ IMPORTANT: Use full http url, e.g. https://example.com
     def _build_success_response(self, content: str) -> dict[str, Any]:
         """Build success response with optional truncation."""
         tips = "All content is returned."
+        truncated = False
+        total_length = len(content)
 
         if len(content) > CONTENT_TRUNCATE_THRESHOLD:
             content = content[:CONTENT_TRUNCATE_THRESHOLD] + "\n\n... (truncated)"
             tips = "Content truncated. Consider using `download` to save the full source."
+            truncated = True
 
         return {
             "success": True,
             "markdown_content": content,
+            "truncated": truncated,
+            "total_length": total_length,
             "tips": tips,
         }

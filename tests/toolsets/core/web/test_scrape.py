@@ -2,14 +2,14 @@
 
 from contextlib import AsyncExitStack
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext, ModelConfig, ToolConfig
 from pai_agent_sdk.environment.local import LocalEnvironment
-from pai_agent_sdk.toolsets.core.web.scrape import ScrapeTool
+from pai_agent_sdk.toolsets.core.web.scrape import CONTENT_TRUNCATE_THRESHOLD, ScrapeTool
 
 
 def test_scrape_tool_attributes() -> None:
@@ -43,14 +43,8 @@ async def test_scrape_tool_forbidden_url(tmp_path: Path) -> None:
         })
 
 
-async def test_scrape_tool_fallback_to_markitdown(tmp_path: Path, httpx_mock) -> None:
+async def test_scrape_tool_fallback_to_markitdown(tmp_path: Path) -> None:
     """Should fallback to MarkItDown when Firecrawl not configured."""
-    # Mock any HTTP request that MarkItDown might make
-    httpx_mock.add_response(
-        text="<html><body><h1>Test Page</h1><p>This is the content.</p></body></html>",
-        headers={"Content-Type": "text/html"},
-    )
-
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
@@ -67,37 +61,45 @@ async def test_scrape_tool_fallback_to_markitdown(tmp_path: Path, httpx_mock) ->
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
 
-        result = await tool.call(mock_run_ctx, url="https://example.com")
+        # Mock MarkItDown.convert to avoid actual HTTP request
+        mock_result = MagicMock()
+        mock_result.text_content = "# Test Page\n\nThis is the content."
 
-        # Just verify the structure - actual content depends on MarkItDown
+        with patch.object(tool._md, "convert", return_value=mock_result):
+            result = await tool.call(mock_run_ctx, url="https://example.com")
+
         assert result["success"] is True
         assert "markdown_content" in result
         assert "tips" in result
 
 
-async def test_scrape_tool_truncates_long_content(tmp_path: Path, httpx_mock) -> None:
+async def test_scrape_tool_truncates_long_content(tmp_path: Path) -> None:
     """Should truncate content exceeding threshold."""
-    # Create long HTML content
-    long_content = "<html><body>" + "x" * 70000 + "</body></html>"
-    httpx_mock.add_response(
-        text=long_content,
-        headers={"Content-Type": "text/html"},
-    )
-
     async with AsyncExitStack() as stack:
         env = await stack.enter_async_context(
             LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
         )
         ctx = await stack.enter_async_context(
-            AgentContext(file_operator=env.file_operator, shell=env.shell, model_cfg=ModelConfig())
+            AgentContext(
+                file_operator=env.file_operator,
+                shell=env.shell,
+                model_cfg=ModelConfig(tool_config=ToolConfig(firecrawl_api_key=None)),  # Force MarkItDown fallback
+            )
         )
         tool = ScrapeTool(ctx)
 
         mock_run_ctx = MagicMock(spec=RunContext)
         mock_run_ctx.deps = ctx
 
-        result = await tool.call(mock_run_ctx, url="https://example.com")
+        # Create long content that exceeds threshold
+        long_content = "x" * (CONTENT_TRUNCATE_THRESHOLD + 10000)
+        mock_result = MagicMock()
+        mock_result.text_content = long_content
+
+        with patch.object(tool._md, "convert", return_value=mock_result):
+            result = await tool.call(mock_run_ctx, url="https://example.com")
 
         assert result["success"] is True
-        # Content should be truncated if MarkItDown preserves the long content
-        assert len(result["markdown_content"]) <= 70000
+        assert result["truncated"] is True
+        # Content is truncated to threshold + suffix "\n\n... (truncated)"
+        assert len(result["markdown_content"]) <= CONTENT_TRUNCATE_THRESHOLD + 20

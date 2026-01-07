@@ -13,6 +13,20 @@ from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
 
 
+@pytest.fixture(autouse=True)
+def clear_http_client_cache():
+    """Clear the cached HTTP client before and after each test.
+
+    The cached HTTP client may be bound to a closed event loop from a previous test,
+    causing 'Event loop is closed' errors when reused in a new test.
+    """
+    from pai_agent_sdk.toolsets.core.web._http_client import _get_http_client
+
+    _get_http_client.cache_clear()
+    yield
+    _get_http_client.cache_clear()
+
+
 def get_port() -> int:
     """Get an available port on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
