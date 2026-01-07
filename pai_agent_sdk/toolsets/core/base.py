@@ -265,7 +265,7 @@ class Toolset(BaseToolset[AgentDepsT]):
         pre_hooks: dict[str, PreHookFunc[AgentDepsT]] | None = None,
         post_hooks: dict[str, PostHookFunc[AgentDepsT]] | None = None,
         global_hooks: GlobalHooks | None = None,
-        max_retries: int = 1,
+        max_retries: int = 3,
         timeout: float | None = None,
         toolset_id: str | None = None,
         skip_unavailable: bool = True,

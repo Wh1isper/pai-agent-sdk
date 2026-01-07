@@ -56,6 +56,8 @@ Example:
     ```
 """
 
+import asyncio
+from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -66,7 +68,14 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
-from pydantic_ai.messages import ModelMessage, RetryPromptPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import HandleResponseEvent as PydanticHandleResponseEvent
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponseStreamEvent,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RunUsage
 
 from pai_agent_sdk.environment.base import FileOperator, ResourceRegistry, Shell
@@ -141,6 +150,25 @@ class ToolIdWrapper:
                 if isinstance(p, (ToolCallPart, ToolReturnPart, RetryPromptPart)):
                     p.tool_call_id = self.upsert_tool_call_id(p.tool_call_id)
         return message_history
+
+
+# =============================================================================
+# Subagent Stream Event Types
+# =============================================================================
+
+# Subagent stream event type for the queue
+# Includes pydantic-ai events + Any for user-defined custom events
+SubagentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | Any
+
+
+def _create_stream_queue_factory() -> dict[str, "asyncio.Queue[SubagentStreamEvent]"]:
+    """Create a defaultdict factory for subagent stream queues."""
+    return defaultdict(asyncio.Queue)
+
+
+# =============================================================================
+# Model Capability
+# =============================================================================
 
 
 class ModelCapability(str, Enum):
@@ -335,6 +363,15 @@ class AgentContext(BaseModel):
     tool_id_wrapper: ToolIdWrapper = Field(default_factory=ToolIdWrapper)
     """Tool ID wrapper for normalizing tool call IDs across providers."""
 
+    subagent_stream_queues: dict[str, "asyncio.Queue[SubagentStreamEvent]"] = Field(
+        default_factory=_create_stream_queue_factory
+    )
+    """Stream queues for subagent events, keyed by tool_call_id.
+
+    Each queue receives SubagentStreamEvent instances during subagent execution,
+    enabling real-time streaming of subagent responses.
+    """
+
     _agent_name: str = "main"
 
     @property
@@ -424,6 +461,7 @@ class AgentContext(BaseModel):
     async def enter_subagent(
         self,
         agent_name: str,
+        agent_id: str | None = None,
         **override: Any,
     ) -> AsyncGenerator["Self", None]:
         """Create a child context for subagent with independent timing.
@@ -435,12 +473,13 @@ class AgentContext(BaseModel):
         - Shared file_operator and shell from parent
 
         Args:
+            agent_id: ID of the subagent_id, can be tool call ID or UUID.
             agent_name: Name of the subagent.
             **override: Additional fields to override in the subagent context.
                 Subclasses can pass extra fields without overriding this method.
         """
         update: dict[str, Any] = {
-            "run_id": _generate_run_id(),
+            "run_id": agent_id or _generate_run_id(),
             "parent_run_id": self.run_id,
             "start_at": datetime.now(),
             "end_at": None,
