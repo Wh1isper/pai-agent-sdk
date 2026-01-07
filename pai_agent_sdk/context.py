@@ -71,6 +71,7 @@ from pydantic_ai import ModelSettings, RunContext
 from pydantic_ai.messages import HandleResponseEvent as PydanticHandleResponseEvent
 from pydantic_ai.messages import (
     ModelMessage,
+    ModelMessagesTypeAdapter,
     ModelResponseStreamEvent,
     RetryPromptPart,
     ToolCallPart,
@@ -107,6 +108,62 @@ class ExtraUsageRecord(BaseModel):
 
 if TYPE_CHECKING:
     from typing import Self
+
+
+# =============================================================================
+# Resumable State
+# =============================================================================
+
+
+class ResumableState(BaseModel):
+    """Resumable session state for AgentContext.
+
+    This model captures the session state that can be serialized to JSON and
+    restored later. It handles the special serialization requirements of
+    ModelMessage using ModelMessagesTypeAdapter.
+
+    The subagent_history is stored as serialized dict format (list[dict]) rather
+    than ModelMessage objects, making the entire model JSON-serializable.
+
+    Example:
+        Saving state to JSON file::
+
+            state = ctx.export_state()
+            with open("session.json", "w") as f:
+                f.write(state.model_dump_json(indent=2))
+
+        Restoring state from JSON file::
+
+            with open("session.json") as f:
+                state = ResumableState.model_validate_json(f.read())
+            new_ctx.restore_state(state)
+    """
+
+    subagent_history: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    """Serialized subagent history, keyed by agent_id. Values are list[dict] from ModelMessagesTypeAdapter.dump_python()."""
+
+    extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
+    """Extra usage records from tool calls and filters."""
+
+    user_prompts: list[str] = Field(default_factory=list)
+    """User prompts collected during the session."""
+
+    handoff_message: str | None = None
+    """Rendered handoff message."""
+
+    deferred_tool_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """Metadata for deferred tool calls."""
+
+    def to_subagent_history(self) -> dict[str, list[ModelMessage]]:
+        """Deserialize subagent_history to ModelMessage objects.
+
+        Returns:
+            Dict mapping agent_id to list of ModelMessage objects.
+        """
+        result: dict[str, list[ModelMessage]] = {}
+        for key, messages_data in self.subagent_history.items():
+            result[key] = ModelMessagesTypeAdapter.validate_python(messages_data)
+        return result
 
 
 class ToolIdWrapper:
@@ -610,3 +667,58 @@ class AgentContext(BaseModel):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and record end time."""
         self.end_at = datetime.now()
+
+    def export_state(self) -> ResumableState:
+        """Export resumable session state.
+
+        Creates a ResumableState containing all session data that can be
+        serialized to JSON and restored later.
+
+        Returns:
+            ResumableState instance ready for serialization.
+
+        Example::
+
+            # Save to JSON file
+            state = ctx.export_state()
+            with open("session.json", "w") as f:
+                f.write(state.model_dump_json(indent=2))
+        """
+        # Serialize subagent_history using ModelMessagesTypeAdapter
+        serialized_history: dict[str, list[dict[str, Any]]] = {}
+        for key, messages in self.subagent_history.items():
+            serialized_history[key] = ModelMessagesTypeAdapter.dump_python(messages)
+
+        return ResumableState(
+            subagent_history=serialized_history,
+            extra_usages=list(self.extra_usages),
+            user_prompts=list(self.user_prompts),
+            handoff_message=self.handoff_message,
+            deferred_tool_metadata=dict(self.deferred_tool_metadata),
+        )
+
+    def with_state(self, state: ResumableState) -> "Self":
+        """Restore session state from a ResumableState.
+
+        Updates the context with state from a previously exported ResumableState.
+        This allows resuming a session after serialization/deserialization.
+
+        Args:
+            state: ResumableState to restore from.
+
+        Returns:
+            Self for method chaining.
+
+        Example::\n
+            # Load from JSON file and use with async context manager
+            with open("session.json") as f:
+                state = ResumableState.model_validate_json(f.read())
+            async with AgentContext(...).with_state(state) as ctx:
+                ...
+        """
+        self.subagent_history = state.to_subagent_history()
+        self.extra_usages = list(state.extra_usages)
+        self.user_prompts = list(state.user_prompts)
+        self.handoff_message = state.handoff_message
+        self.deferred_tool_metadata = dict(state.deferred_tool_metadata)
+        return self

@@ -549,5 +549,99 @@ async def test_get_context_instructions_no_handoff_warning_when_disabled(tmp_pat
 
             instructions = await ctx.get_context_instructions(mock_run_context)
 
-            # Should not contain system-reminder
+            # No system-reminder when handoff disabled
             assert "<system-reminder>" not in instructions
+
+
+# =============================================================================
+# ResumableState Tests
+# =============================================================================
+
+
+async def test_export_and_with_state_empty(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should export and restore empty state correctly."""
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        state = ctx.export_state()
+
+        assert state.subagent_history == {}
+        assert state.extra_usages == []
+        assert state.user_prompts == []
+        assert state.handoff_message is None
+        assert state.deferred_tool_metadata == {}
+
+    # Restore to new context
+    async with AgentContext(file_operator=file_operator, shell=shell) as new_ctx:
+        new_ctx.with_state(state)
+
+        assert new_ctx.subagent_history == {}
+        assert new_ctx.extra_usages == []
+
+
+async def test_export_and_with_state_with_data(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should export and restore state with data correctly."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    from pydantic_ai.usage import RunUsage
+
+    from pai_agent_sdk.context import ExtraUsageRecord
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        # Set up some state
+        ctx.subagent_history["agent-1"] = [
+            ModelRequest(parts=[UserPromptPart(content="Hello")]),
+            ModelResponse(parts=[TextPart(content="Hi there")]),
+        ]
+        ctx.extra_usages.append(
+            ExtraUsageRecord(uuid="test-uuid", agent="search", usage=RunUsage(input_tokens=50, output_tokens=50))
+        )
+        ctx.user_prompts.append("Test prompt")
+        ctx.handoff_message = "Handoff summary"
+        ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
+
+        state = ctx.export_state()
+
+    # Restore to new context
+    async with AgentContext(file_operator=file_operator, shell=shell) as new_ctx:
+        new_ctx.with_state(state)
+
+        # Verify subagent_history is restored correctly
+        assert "agent-1" in new_ctx.subagent_history
+        assert len(new_ctx.subagent_history["agent-1"]) == 2
+        request_msg = new_ctx.subagent_history["agent-1"][0]
+        assert isinstance(request_msg, ModelRequest)
+        assert request_msg.parts[0].content == "Hello"
+
+        # Verify other fields
+        assert len(new_ctx.extra_usages) == 1
+        assert new_ctx.extra_usages[0].uuid == "test-uuid"
+        assert new_ctx.user_prompts == ["Test prompt"]
+        assert new_ctx.handoff_message == "Handoff summary"
+        assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
+
+
+async def test_resumable_state_json_serialization(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should serialize and deserialize ResumableState to/from JSON."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    from pai_agent_sdk.context import ResumableState
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        ctx.subagent_history["agent-1"] = [
+            ModelRequest(parts=[UserPromptPart(content="Hello")]),
+            ModelResponse(parts=[TextPart(content="Hi there")]),
+        ]
+        ctx.user_prompts.append("Test prompt")
+
+        state = ctx.export_state()
+
+        # Serialize to JSON string
+        json_str = state.model_dump_json()
+        assert isinstance(json_str, str)
+
+        # Deserialize from JSON string
+        restored_state = ResumableState.model_validate_json(json_str)
+
+        # Verify restored state can be converted back to ModelMessage
+        history = restored_state.to_subagent_history()
+        assert "agent-1" in history
+        assert len(history["agent-1"]) == 2
+        assert history["agent-1"][0].parts[0].content == "Hello"
