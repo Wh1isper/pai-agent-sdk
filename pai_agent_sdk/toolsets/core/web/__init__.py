@@ -1,11 +1,41 @@
-"""Web-related tools.
+"""Web toolset for web search, scraping, and file operations.
 
-Tools for web scraping, HTTP requests, and web interactions.
+This module requires optional dependencies. Install with:
+    pip install pai-agent-sdk[web]
 """
 
-from pai_agent_sdk.toolsets.core.base import BaseTool
+try:
+    import firecrawl  # noqa: F401
+    import tavily  # noqa: F401
+except ImportError as e:
+    raise ImportError("Web toolset requires optional dependencies. Install with: pip install pai-agent-sdk[web]") from e
 
-# TODO: Implement web tools
-tools: list[type[BaseTool]] = []
+from pai_agent_sdk.toolsets.core.web._types import (
+    DownloadResult,
+    ErrorResult,
+    FetchTextResult,
+    HeadOnlyResult,
+    ImageSearchResult,
+    ScrapeResult,
+    SearchResult,
+)
+from pai_agent_sdk.toolsets.core.web.download import DownloadTool
+from pai_agent_sdk.toolsets.core.web.fetch import FetchTool
+from pai_agent_sdk.toolsets.core.web.scrape import ScrapeTool
+from pai_agent_sdk.toolsets.core.web.search import SearchImageTool, SearchStockImageTool, SearchTool
 
-__all__ = ["tools"]
+__all__ = [
+    "DownloadResult",
+    "DownloadTool",
+    "ErrorResult",
+    "FetchTextResult",
+    "FetchTool",
+    "HeadOnlyResult",
+    "ImageSearchResult",
+    "ScrapeResult",
+    "ScrapeTool",
+    "SearchImageTool",
+    "SearchResult",
+    "SearchStockImageTool",
+    "SearchTool",
+]

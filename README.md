@@ -24,6 +24,7 @@ pip install pai-agent-sdk[docker]
 ## Documentation
 
 - [Logging Configuration](docs/logging.md) - Configure SDK logging levels
+- [Custom Environments](docs/environment.md) - Extend context management with custom environments
 
 ## Development
 

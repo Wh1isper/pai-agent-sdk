@@ -202,8 +202,26 @@ def _xml_to_string(element: Element) -> str:
     return "\n".join(line for line in lines if line.strip())
 
 
+def _env_str(key: str) -> str | None:
+    """Get string from environment variable."""
+    import os
+
+    return os.environ.get(key) or None
+
+
 class ToolConfig(BaseModel):
-    """Tool-level configuration for fine-grained control."""
+    """Tool-level configuration for fine-grained control.
+
+    API keys can be passed directly or read from environment variables:
+    - GOOGLE_API_KEY / GOOGLE_CX for Google Search
+    - TAVILY_API_KEY for Tavily Search
+    - PIXABAY_API_KEY for Pixabay Image Search
+    - RAPIDAPI_API_KEY for RapidAPI Image Search
+    - FIRECRAWL_API_KEY for Firecrawl Web Scraping
+    """
+
+    skip_url_verification: bool = True
+    """Skip SSRF URL verification. Default enabled (skip). Set to False to enable verification for public-facing environments."""
 
     enable_load_document: bool = False
     """Enable document URL parsing in LoadTool. Default disabled due to poor model support."""
@@ -219,6 +237,27 @@ class ToolConfig(BaseModel):
 
     video_understanding_model_settings: dict[str, Any] | None = None
     """Model settings for video understanding agent."""
+
+    # Web search API keys
+    google_search_api_key: str | None = Field(default_factory=lambda: _env_str("GOOGLE_SEARCH_API_KEY"))
+    """Google Custom Search API key."""
+
+    google_search_cx: str | None = Field(default_factory=lambda: _env_str("GOOGLE_SEARCH_CX"))
+    """Google Custom Search Engine ID."""
+
+    tavily_api_key: str | None = Field(default_factory=lambda: _env_str("TAVILY_API_KEY"))
+    """Tavily API key for web search."""
+
+    # Image search API keys
+    pixabay_api_key: str | None = Field(default_factory=lambda: _env_str("PIXABAY_API_KEY"))
+    """Pixabay API key for stock image search."""
+
+    rapidapi_api_key: str | None = Field(default_factory=lambda: _env_str("RAPIDAPI_API_KEY"))
+    """RapidAPI key for real-time image search."""
+
+    # Web scraping API key
+    firecrawl_api_key: str | None = Field(default_factory=lambda: _env_str("FIRECRAWL_API_KEY"))
+    """Firecrawl API key for web scraping."""
 
 
 class ModelConfig(BaseModel):
@@ -354,7 +393,7 @@ class AgentContext(BaseModel):
     resources: ResourceRegistry = Field(default_factory=ResourceRegistry)
     """Resource registry for runtime resources. Provided by Environment."""
 
-    model_cfg: ModelConfig | None = None
+    model_cfg: ModelConfig = Field(default_factory=ModelConfig)
     """Model configuration for context management."""
 
     extra_usage: dict[str, RunUsage] = Field(default_factory=dict)
@@ -411,7 +450,7 @@ class AgentContext(BaseModel):
         SubElement(root, "elapsed-time").text = elapsed_str
 
         # Model configuration - only context_window
-        if self.model_cfg is not None and self.model_cfg.context_window is not None:
+        if self.model_cfg.context_window is not None:
             config = SubElement(root, "model-config")
             SubElement(config, "context-window").text = str(self.model_cfg.context_window)
 
@@ -435,7 +474,6 @@ class AgentContext(BaseModel):
         # Handoff threshold warning
         if (
             metadata.get("enable_handoff_tool", False)
-            and self.model_cfg is not None
             and self.model_cfg.context_window is not None
             and self.model_cfg.handoff_threshold is not None
             and run_context

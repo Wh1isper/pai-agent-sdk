@@ -86,6 +86,7 @@ Core dependencies include:
 Optional:
 
 - docker (for sandbox features)
+- web: tavily-python, firecrawl-py, markitdown (for web tools)
 
 ## Architecture Notes
 

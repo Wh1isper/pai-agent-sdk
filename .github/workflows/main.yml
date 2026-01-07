@@ -29,17 +29,16 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Docker extra runs on all Python versions
-        # No extra only runs on 3.13 (most tests skip without Docker)
+        # No extra only runs on 3.13
         include:
           - python-version: "3.11"
-            extras: "docker"
+            extras: "all"
           - python-version: "3.12"
-            extras: "docker"
+            extras: "all"
           - python-version: "3.13"
-            extras: "docker"
+            extras: "all"
           - python-version: "3.14"
-            extras: "docker"
+            extras: "all"
           - python-version: "3.13"
             extras: ""
       fail-fast: false

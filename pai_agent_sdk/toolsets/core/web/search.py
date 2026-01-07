@@ -1,0 +1,272 @@
+"""Web search tools: search, search_stock_image, search_image."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import TYPE_CHECKING, Annotated, Any, Literal
+
+from pydantic import Field
+from pydantic_ai import RunContext
+from tavily import AsyncTavilyClient
+
+from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.toolsets.core.base import BaseTool
+from pai_agent_sdk.toolsets.core.web._http_client import check_url_accessible, get_http_client
+
+if TYPE_CHECKING:
+    pass
+
+URL_CHECK_TIMEOUT = 5.0
+URL_VALIDATION_CONCURRENCY = 5
+
+
+class SearchTool(BaseTool):
+    """Web search tool using Google or Tavily."""
+
+    name = "search"
+    description = """Search the web for information.
+If the initial query is too broad or results are not ideal, refine the search by progressively reducing keywords.
+Useful for retrieving up-to-date information, specific data, or detailed background research.
+"""
+
+    def is_available(self) -> bool:
+        """Available if Google or Tavily API keys are configured."""
+        cfg = self.ctx.model_cfg.tool_config
+        has_google = bool(cfg.google_search_api_key and cfg.google_search_cx)
+        has_tavily = bool(cfg.tavily_api_key)
+        return has_google or has_tavily
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        query: Annotated[str, Field(description="The search query")],
+        num: Annotated[int, Field(description="Number of results to return (1-10)", default=10)] = 10,
+        search_depth: Annotated[
+            Literal["basic", "advanced"],
+            Field(description="Search depth (Tavily only)", default="basic"),
+        ] = "basic",
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Execute web search."""
+        cfg = ctx.deps.model_cfg.tool_config
+
+        # Prefer Google if available
+        if cfg.google_search_api_key and cfg.google_search_cx:
+            return await self._search_google(query, num, cfg.google_search_api_key, cfg.google_search_cx)
+        else:
+            return await self._search_tavily(query, search_depth, cfg.tavily_api_key)  # type: ignore[arg-type]
+
+    async def _search_google(
+        self, query: str, num: int, api_key: str, cx: str
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Search using Google Custom Search API."""
+        if not 1 <= num <= 10:
+            return {"success": False, "error": "num must be between 1 and 10"}
+
+        client = get_http_client()
+        params = {
+            "q": query,
+            "num": num,
+            "key": api_key,
+            "cx": cx,
+        }
+
+        response = await client.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params=params,
+            timeout=60,
+        )
+
+        if response.status_code != 200:
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
+
+        return response.json()
+
+    async def _search_tavily(
+        self, query: str, search_depth: Literal["basic", "advanced"], api_key: str
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Search using Tavily API."""
+        client = AsyncTavilyClient(api_key)
+        results = await client.search(query, search_depth=search_depth)  # type: ignore[arg-type]
+
+        if not results.get("results"):
+            return {"success": False, "error": "No search results found."}
+
+        return results["results"]
+
+
+class SearchStockImageTool(BaseTool):
+    """Stock image search using Pixabay."""
+
+    name = "search_stock_image"
+    description = """Search high-quality stock images from Pixabay.
+Ideal for finding professional stock photos, illustrations, and graphics for landing pages, websites, and design work.
+Pixabay offers royalty-free images with commercial usage rights.
+
+Best for:
+- High-quality stock photography and illustrations
+- Landing page design elements
+- Website backgrounds and hero images
+- Abstract concepts and artistic content
+
+NOTE: For specific characters, celebrities, or real-world references, use search_image instead.
+"""
+
+    def is_available(self) -> bool:
+        """Available if Pixabay API key is configured."""
+        return bool(self.ctx.model_cfg.tool_config.pixabay_api_key)
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        query: Annotated[
+            str,
+            Field(description="Search term (max 100 chars). E.g., 'business team', 'nature landscape'"),
+        ],
+    ) -> dict[str, Any]:
+        """Search Pixabay for stock images."""
+        cfg = ctx.deps.model_cfg.tool_config
+        client = get_http_client()
+
+        params = {"q": query, "key": cfg.pixabay_api_key}
+        response = await client.get("https://pixabay.com/api/", params=params, follow_redirects=True)
+        response.raise_for_status()
+
+        data = response.json()
+        if isinstance(data, dict) and "hits" in data:
+            await self._validate_results(data["hits"])
+
+        data["system-reminder"] = (
+            "All image URLs have been verified for accessibility. "
+            "You can use the `download` tool to save the images you need."
+        )
+        return data
+
+    async def _validate_results(self, results: list[dict[str, Any]]) -> None:
+        """Validate image URLs in parallel."""
+        semaphore = asyncio.Semaphore(URL_VALIDATION_CONCURRENCY)
+
+        async def validate_one(idx: int) -> None:
+            item = results[idx]
+            urls = [item.get("webformatURL"), item.get("previewURL"), item.get("largeImageURL")]
+            urls = [u for u in urls if u]
+
+            async with semaphore:
+                accessible = False
+                for url in urls:
+                    if await check_url_accessible(url, URL_CHECK_TIMEOUT):
+                        accessible = True
+                        break
+
+                if not accessible:
+                    results[idx] = {
+                        "id": item.get("id"),
+                        "tags": item.get("tags"),
+                        "accessible": False,
+                        "unavailable_reason": "Image URLs could not be reached during verification.",
+                    }
+
+        tasks = [validate_one(i) for i in range(len(results)) if isinstance(results[i], dict)]
+        await asyncio.gather(*tasks)
+
+
+class SearchImageTool(BaseTool):
+    """Real-time image search using RapidAPI."""
+
+    name = "search_image"
+    description = """Search real-time images from the internet via RapidAPI.
+Provides high-precision search results similar to Google Images.
+
+Best for:
+- Celebrity photos and public figures
+- Movie and fictional characters (e.g., Harry Potter, Marvel heroes)
+- Current events and news-related images
+- Specific products, brands, or locations
+- Real-world objects and entities
+
+PRIORITY USE: First choice for specific characters, people, or entities where accuracy matters.
+"""
+
+    def is_available(self) -> bool:
+        """Available if RapidAPI key is configured."""
+        return bool(self.ctx.model_cfg.tool_config.rapidapi_api_key)
+
+    async def call(
+        self,
+        ctx: RunContext[AgentContext],
+        query: Annotated[str, Field(description="Search query/keywords")],
+        limit: Annotated[int, Field(description="Maximum results to return", default=10)] = 10,
+        size: Annotated[
+            str,
+            Field(description="Image size: any, large, medium, icon, etc.", default="any"),
+        ] = "any",
+    ) -> dict[str, Any]:
+        """Search images via RapidAPI."""
+        cfg = ctx.deps.model_cfg.tool_config
+        client = get_http_client()
+
+        params = {
+            "query": query,
+            "limit": limit,
+            "size": size,
+            "color": "any",
+            "type": "any",
+            "time": "any",
+            "usage_rights": "any",
+            "file_type": "any",
+            "aspect_ratio": "any",
+            "safe_search": "off",
+            "region": "us",
+        }
+        headers = {
+            "x-rapidapi-host": "real-time-image-search.p.rapidapi.com",
+            "x-rapidapi-key": cfg.rapidapi_api_key,
+        }
+
+        response = await client.get(
+            "https://real-time-image-search.p.rapidapi.com/search",
+            params=params,
+            headers=headers,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        if data.get("status") == "ERROR":
+            return {"success": False, "error": data.get("message", "Unknown error")}
+
+        if isinstance(data, dict) and "data" in data:
+            await self._validate_results(data["data"])
+
+        data["system-reminder"] = (
+            "All image URLs have been verified for accessibility. "
+            "You can use the `download` tool to save the images you need."
+        )
+        return data
+
+    async def _validate_results(self, results: list[dict[str, Any]]) -> None:
+        """Validate image URLs in parallel."""
+        semaphore = asyncio.Semaphore(URL_VALIDATION_CONCURRENCY)
+
+        async def validate_one(idx: int) -> None:
+            item = results[idx]
+            url = item.get("url")
+
+            if not url:
+                results[idx] = self._build_inaccessible(item)
+                return
+
+            async with semaphore:
+                if not await check_url_accessible(url, URL_CHECK_TIMEOUT):
+                    results[idx] = self._build_inaccessible(item)
+
+        tasks = [validate_one(i) for i in range(len(results)) if isinstance(results[i], dict)]
+        await asyncio.gather(*tasks)
+
+    def _build_inaccessible(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Build response for inaccessible image."""
+        return {
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "accessible": False,
+            "unavailable_reason": "Image URL could not be reached during verification.",
+        }
