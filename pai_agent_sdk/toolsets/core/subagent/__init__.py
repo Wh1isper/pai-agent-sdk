@@ -40,6 +40,10 @@ For streaming, use the parent context's stream queue::
         return result.output, result.usage()
 """
 
-from pai_agent_sdk.toolsets.core.subagent.factory import create_subagent_tool
+from pai_agent_sdk.toolsets.core.subagent.factory import (
+    SubagentCallFunc,
+    create_subagent_call_func,
+    create_subagent_tool,
+)
 
-__all__ = ["create_subagent_tool"]
+__all__ = ["SubagentCallFunc", "create_subagent_call_func", "create_subagent_tool"]

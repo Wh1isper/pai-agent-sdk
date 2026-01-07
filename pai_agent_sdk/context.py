@@ -439,7 +439,7 @@ class AgentContext(BaseModel):
     subagent_stream_queues: dict[str, "asyncio.Queue[SubagentStreamEvent]"] = Field(
         default_factory=_create_stream_queue_factory
     )
-    """Stream queues for subagent events, keyed by tool_call_id.
+    """Stream queues for subagent events, keyed by run_id(tool_call_id).
 
     Each queue receives SubagentStreamEvent instances during subagent execution,
     enabling real-time streaming of subagent responses.

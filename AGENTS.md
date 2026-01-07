@@ -96,6 +96,15 @@ Optional:
 - Agents are modular and located in `agents/` directory
 - Logging is centralized in `_logger.py` - see [docs/logging.md](docs/logging.md) for configuration
 
+## Toolset Architecture
+
+See [docs/toolset.md](docs/toolset.md) for detailed Toolset documentation, including:
+
+- Creating custom tools with `BaseTool`
+- Hook system (pre/post hooks, global hooks)
+- Error handling in post-hooks (exceptions as results)
+- Extending `Toolset` via `_call_tool_func` for timeout/retry/custom logic
+
 ## Async Context Manager Patterns
 
 See [docs/environment.md](docs/environment.md) for detailed Environment architecture documentation, including:

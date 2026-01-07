@@ -361,6 +361,30 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         return tools
 
+    async def _call_tool_func(
+        self,
+        args: dict[str, Any],
+        ctx: RunContext[AgentDepsT],
+        tool: HookableToolsetTool[AgentDepsT],
+    ) -> Any:
+        """Execute the tool function and capture exceptions.
+
+        Subclasses can override this method to customize tool execution,
+        e.g., adding timeout handling, retry logic, or custom error handling.
+
+        Args:
+            args: The validated tool arguments.
+            ctx: The run context.
+            tool: The tool to execute.
+
+        Returns:
+            The tool result, or an Exception if execution failed.
+        """
+        try:
+            return await tool.call_func(args, ctx)
+        except Exception as e:
+            return e
+
     async def call_tool(
         self,
         name: str,
@@ -371,6 +395,14 @@ class Toolset(BaseToolset[AgentDepsT]):
         """Call a tool with hooks.
 
         Execution order: global_pre -> tool_pre -> execute -> tool_post -> global_post
+
+        Post-hooks receive the result, which may be an Exception instance if the tool
+        execution failed. Hooks can:
+        - Log/monitor errors by checking `isinstance(result, Exception)`
+        - Transform errors into user-friendly messages
+        - Recover from certain errors by returning a fallback value
+
+        If the final result is still an Exception after all hooks, it will be raised.
         """
         if not isinstance(tool, HookableToolsetTool):
             msg = f"Expected HookableToolsetTool, got {type(tool)}"
@@ -384,13 +416,17 @@ class Toolset(BaseToolset[AgentDepsT]):
         if tool.pre_hook:
             args = await tool.pre_hook(ctx, args)
 
-        result = await tool.call_func(args, ctx)
+        result = await self._call_tool_func(args, ctx, tool)
 
         if tool.post_hook:
             result = await tool.post_hook(ctx, result)
 
         if self.global_hooks.post:
             result = await self.global_hooks.post(ctx, name, result)
+
+        # Re-raise if result is still an exception after hooks
+        if isinstance(result, BaseException):
+            raise result
 
         return result
 

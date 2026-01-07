@@ -1,25 +1,35 @@
-"""Factory function for creating subagent tools.
+"""Factory functions for creating subagent tools.
 
-This module provides the create_subagent_tool function which dynamically
-creates BaseTool subclasses that wrap subagent call functions.
+This module provides:
+- SubagentCallFunc: Protocol for subagent call functions
+- create_subagent_tool: Create BaseTool from a SubagentCallFunc
+- create_subagent_call_func: Create SubagentCallFunc from a pydantic-ai Agent
 """
 
 from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Annotated, Any, Protocol, cast, runtime_checkable
 
-from pydantic_ai import RunContext
+from pydantic import Field
+from pydantic_ai import Agent, AgentRunResult, RunContext
 from pydantic_ai.usage import RunUsage
 
 from pai_agent_sdk.context import AgentContext
 from pai_agent_sdk.toolsets.core.base import BaseTool
 
-# Type alias for subagent call functions
-# First parameter is AgentContext (the subagent context), rest are user-defined
-# Returns (output, RunUsage) tuple
-SubagentCallFunc = Callable[..., Awaitable[tuple[Any, RunUsage]]]
+
+@runtime_checkable
+class SubagentCallFunc(Protocol):
+    """Protocol for subagent call functions.
+
+    The first parameter must be AgentContext (the subagent context),
+    followed by user-defined parameters. Returns (output, RunUsage) tuple.
+    """
+
+    async def __call__(self, ctx: AgentContext, /, **kwargs: Any) -> tuple[Any, RunUsage]: ...
+
 
 # Type alias for instruction functions
 InstructionFunc = Callable[[RunContext[AgentContext]], str | None]
@@ -104,7 +114,7 @@ def create_subagent_tool(
 
         async def call(self, ctx: RunContext[AgentContext], /, **kwargs: Any) -> str:
             """Execute the subagent call and record usage."""
-            output, usage = await call_func(ctx, **kwargs)
+            output, usage = await call_func(ctx.deps, **kwargs)
 
             # Record usage in extra_usages
             if ctx.tool_call_id:
@@ -188,3 +198,54 @@ def _to_pascal_case(name: str) -> str:
     """Convert snake_case or kebab-case to PascalCase."""
     parts = name.replace("-", "_").split("_")
     return "".join(part.capitalize() for part in parts)
+
+
+def create_subagent_call_func(
+    agent: Agent[AgentContext, Any],
+) -> SubagentCallFunc:
+    """Create a SubagentCallFunc from a pydantic-ai Agent.
+
+    Wraps a pydantic-ai Agent into a SubagentCallFunc that can be used
+    directly or passed to create_subagent_tool().
+
+    Args:
+        agent: A pydantic-ai Agent with AgentContext as deps type.
+
+    Returns:
+        A SubagentCallFunc with signature (ctx: AgentContext, prompt: str) -> tuple[Any, RunUsage]
+
+    Example::
+
+        from pydantic_ai import Agent
+
+        search_agent: Agent[AgentContext, str] = Agent(...)
+
+        # Create the call function
+        search_func = create_subagent_call_func(search_agent)
+
+        # Direct usage
+        output, usage = await search_func(ctx, prompt="Search for Python tutorials")
+
+        # Or pass to create_subagent_tool
+        SearchTool = create_subagent_tool("search", "Search the web", search_func)
+    """
+
+    async def call_func(
+        ctx: AgentContext,
+        prompt: Annotated[str, Field(description="The prompt to send to the subagent")],
+    ) -> tuple[Any, RunUsage]:
+        """Execute the agent with the given prompt."""
+        async with agent.iter(prompt, deps=ctx) as run:
+            async for node in run:
+                if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
+                    continue
+
+                elif Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):
+                    async with node.stream(run.ctx) as request_stream:
+                        async for event in request_stream:
+                            await ctx.subagent_stream_queues[ctx.run_id].put(event)
+
+        result = cast(AgentRunResult, run.result)
+        return result.output, result.usage()
+
+    return call_func  # type: ignore[return-value]

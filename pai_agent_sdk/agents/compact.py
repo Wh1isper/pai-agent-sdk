@@ -29,6 +29,7 @@ from pai_agent_sdk._logger import logger
 from pai_agent_sdk.agents.models import infer_model
 from pai_agent_sdk.context import AgentContext, ModelConfig
 from pai_agent_sdk.filters import (
+    create_system_prompt_filter,
     drop_extra_images,
     drop_extra_videos,
     drop_gif_images,
@@ -129,6 +130,7 @@ def get_compact_agent(
         deps_type=AgentContext,
         system_prompt=system_prompt,
         history_processors=[
+            create_system_prompt_filter(system_prompt),  # Ensure system prompt is consistent
             drop_gif_images,  # Gemini 2.5 pro can't handle gifs
             drop_extra_images,
             drop_extra_videos,
