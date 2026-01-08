@@ -91,7 +91,8 @@ class CondenseResult(BaseModel):
     )
     original_prompt: str = Field(
         ...,
-        description="The original prompt and key information from the user.",
+        description="The original prompt and key information from the user. "
+        "Used as fallback when agent_ctx.user_prompts is not set.",
     )
 
 
@@ -334,6 +335,9 @@ def create_compact_filter(
             condense_markdown = condense_result_to_markdown(condense_result)
 
             # Build compacted messages
+            # Priority: agent_ctx.user_prompts > condense_result.original_prompt
+            # user_prompts is set by main agent from actual user input, while original_prompt
+            # is extracted by LLM from conversation history and may be less accurate
             compacted = _build_compacted_messages(
                 condense_markdown, agent_ctx.user_prompts or condense_result.original_prompt
             )

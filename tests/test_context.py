@@ -702,3 +702,125 @@ async def test_resumable_state_json_serialization_with_extra_usages(
         assert rec2.usage.output_tokens == 75
         assert rec2.usage.requests == 1
         assert rec2.usage.tool_calls == 2
+
+
+async def test_resumable_state_with_binary_content(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should serialize and deserialize ResumableState with BinaryContent (images, audio) to/from JSON."""
+    import base64
+
+    from pydantic_ai.messages import BinaryContent, ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    from pai_agent_sdk.context import ResumableState
+
+    # Create a test 1x1 red PNG image
+    red_pixel_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+    )
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        # Create BinaryContent with image data
+        image_content = BinaryContent(data=red_pixel_png, media_type="image/png")
+
+        # Add history with binary content in user prompt
+        ctx.subagent_history["vision-agent"] = [
+            ModelRequest(parts=[UserPromptPart(content=[image_content, "Describe this image"])]),
+            ModelResponse(parts=[TextPart(content="This is a 1x1 red pixel image.")]),
+        ]
+
+        state = ctx.export_state()
+
+        # Serialize to JSON string
+        json_str = state.model_dump_json()
+        assert isinstance(json_str, str)
+
+        # Verify the binary data is encoded (should be base64 string in JSON)
+        assert "image/png" in json_str
+
+        # Deserialize from JSON string
+        restored_state = ResumableState.model_validate_json(json_str)
+
+        # Verify restored state can be converted back to ModelMessage
+        history = restored_state.to_subagent_history()
+        assert "vision-agent" in history
+        assert len(history["vision-agent"]) == 2
+
+        # Verify the ModelRequest with BinaryContent is properly restored
+        request = history["vision-agent"][0]
+        assert isinstance(request, ModelRequest)
+        user_part = request.parts[0]
+        assert isinstance(user_part, UserPromptPart)
+
+        # UserPromptPart.content should be a list with BinaryContent and str
+        content_list = user_part.content
+        assert isinstance(content_list, list)
+        assert len(content_list) == 2
+
+        # First item should be BinaryContent with the image
+        restored_image = content_list[0]
+        assert isinstance(restored_image, BinaryContent)
+        assert restored_image.media_type == "image/png"
+        assert restored_image.data == red_pixel_png  # Binary data should match exactly
+
+        # Second item should be the text prompt
+        assert content_list[1] == "Describe this image"
+
+
+async def test_resumable_state_with_multiple_binary_contents(
+    file_operator: LocalFileOperator, shell: LocalShell
+) -> None:
+    """Should handle multiple BinaryContent items across different messages."""
+    import base64
+
+    from pydantic_ai.messages import BinaryContent, ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    from pai_agent_sdk.context import ResumableState
+
+    # Create test images
+    red_pixel_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+    )
+    # Create a simple test JPEG (minimal valid JPEG)
+    minimal_jpeg = base64.b64decode(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+        "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwh"
+        "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAAR"
+        "CAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEB"
+        "AQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAB//2Q=="
+    )
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        image1 = BinaryContent(data=red_pixel_png, media_type="image/png")
+        image2 = BinaryContent(data=minimal_jpeg, media_type="image/jpeg")
+
+        # Multiple agents with binary content
+        ctx.subagent_history["agent-1"] = [
+            ModelRequest(parts=[UserPromptPart(content=[image1, "First image"])]),
+            ModelResponse(parts=[TextPart(content="First response")]),
+        ]
+        ctx.subagent_history["agent-2"] = [
+            ModelRequest(parts=[UserPromptPart(content=[image2, "Second image"])]),
+            ModelResponse(parts=[TextPart(content="Second response")]),
+        ]
+
+        state = ctx.export_state()
+
+        # Serialize and deserialize
+        json_str = state.model_dump_json()
+        restored_state = ResumableState.model_validate_json(json_str)
+        history = restored_state.to_subagent_history()
+
+        # Verify agent-1
+        assert "agent-1" in history
+        req1 = history["agent-1"][0]
+        assert isinstance(req1, ModelRequest)
+        content1 = req1.parts[0].content
+        assert content1[0].data == red_pixel_png
+        assert content1[0].media_type == "image/png"
+
+        # Verify agent-2
+        assert "agent-2" in history
+        req2 = history["agent-2"][0]
+        assert isinstance(req2, ModelRequest)
+        content2 = req2.parts[0].content
+        assert content2[0].data == minimal_jpeg
+        assert content2[0].media_type == "image/jpeg"

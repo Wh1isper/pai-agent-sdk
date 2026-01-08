@@ -824,9 +824,10 @@ class AgentContext(BaseModel):
                 f.write(state.model_dump_json(indent=2))
         """
         # Serialize subagent_history using ModelMessagesTypeAdapter
+        # Use mode='json' to ensure bytes (e.g., BinaryContent.data) are base64-encoded
         serialized_history: dict[str, list[dict[str, Any]]] = {}
         for key, messages in self.subagent_history.items():
-            serialized_history[key] = ModelMessagesTypeAdapter.dump_python(messages)
+            serialized_history[key] = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
 
         # Serialize agent_registry to dict format
         serialized_registry: dict[str, dict[str, Any]] = {

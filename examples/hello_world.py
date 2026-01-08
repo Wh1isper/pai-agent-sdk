@@ -119,6 +119,8 @@ async def main():
         ) as stream:
             async for event in stream:
                 print(event)
+            # Check for exceptions that occurred during streaming
+            stream.raise_if_exception()
             run = stream.run
 
         if run:

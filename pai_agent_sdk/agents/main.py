@@ -422,6 +422,8 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
     Attributes:
         run: The AgentRun instance. None until agent.iter() starts, available during
             and after streaming. Use to access messages, usage, and result.
+        exception: The exception captured during streaming, if any. Available after
+            streaming completes. Check this or call raise_if_exception() after iteration.
 
     Example::
 
@@ -433,7 +435,9 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
                 if should_stop:
                     streamer.interrupt()
                     break
-            # After streaming, access final result and usage
+            # After streaming, check for exceptions
+            streamer.raise_if_exception()
+            # Access final result and usage
             if streamer.run:
                 print(f"Usage: {streamer.run.usage()}")
     """
@@ -442,10 +446,23 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
     _cancel_event: asyncio.Event
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
     run: AgentRun[AgentDepsT, OutputT] | None = None
+    exception: BaseException | None = None
 
     def interrupt(self) -> None:
         """Interrupt the stream, causing iteration to stop."""
         self._cancel_event.set()
+
+    def raise_if_exception(self) -> None:
+        """Raise the captured exception if any occurred during streaming.
+
+        Call this after iteration completes to propagate any errors from
+        the main agent or subagent tasks.
+
+        Raises:
+            BaseException: The exception that occurred during streaming.
+        """
+        if self.exception is not None:
+            raise self.exception
 
     def __aiter__(self) -> AsyncIterator[StreamEvent]:
         return self._event_generator
@@ -656,5 +673,9 @@ async def stream_agent(  # noqa: C901
         yield streamer
     finally:
         cancel_event.set()
-        # Wait for tasks to complete
-        await asyncio.gather(main_task, poll_task, return_exceptions=True)
+        # Wait for tasks to complete and capture any exception
+        results = await asyncio.gather(main_task, poll_task, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                streamer.exception = result
+                break
