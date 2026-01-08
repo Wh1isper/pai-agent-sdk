@@ -12,6 +12,7 @@ mkdir -p skills/docs
 mkdir -p skills/examples
 cp -r docs/* skills/docs/
 cp -r examples/* skills/examples/
+cp examples/.env.example skills/examples/
 cp README.md skills/
 
 echo "Synced docs, examples and .env.example to skills folder"

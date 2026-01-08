@@ -565,7 +565,7 @@ async def test_export_and_with_state_empty(file_operator: LocalFileOperator, she
 
         assert state.subagent_history == {}
         assert state.extra_usages == []
-        assert state.user_prompts == []
+        assert state.user_prompts is None
         assert state.handoff_message is None
         assert state.deferred_tool_metadata == {}
 
@@ -593,7 +593,7 @@ async def test_export_and_with_state_with_data(file_operator: LocalFileOperator,
         ctx.extra_usages.append(
             ExtraUsageRecord(uuid="test-uuid", agent="search", usage=RunUsage(input_tokens=50, output_tokens=50))
         )
-        ctx.user_prompts.append("Test prompt")
+        ctx.user_prompts = "Test prompt"
         ctx.handoff_message = "Handoff summary"
         ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
 
@@ -613,7 +613,7 @@ async def test_export_and_with_state_with_data(file_operator: LocalFileOperator,
         # Verify other fields
         assert len(new_ctx.extra_usages) == 1
         assert new_ctx.extra_usages[0].uuid == "test-uuid"
-        assert new_ctx.user_prompts == ["Test prompt"]
+        assert new_ctx.user_prompts == "Test prompt"
         assert new_ctx.handoff_message == "Handoff summary"
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
 
@@ -629,7 +629,7 @@ async def test_resumable_state_json_serialization(file_operator: LocalFileOperat
             ModelRequest(parts=[UserPromptPart(content="Hello")]),
             ModelResponse(parts=[TextPart(content="Hi there")]),
         ]
-        ctx.user_prompts.append("Test prompt")
+        ctx.user_prompts = "Test prompt"
 
         state = ctx.export_state()
 
@@ -645,3 +645,60 @@ async def test_resumable_state_json_serialization(file_operator: LocalFileOperat
         assert "agent-1" in history
         assert len(history["agent-1"]) == 2
         assert history["agent-1"][0].parts[0].content == "Hello"
+
+
+async def test_resumable_state_json_serialization_with_extra_usages(
+    file_operator: LocalFileOperator, shell: LocalShell
+) -> None:
+    """Should serialize and deserialize ResumableState with extra_usages (RunUsage dataclass) to/from JSON."""
+    from pydantic_ai.usage import RunUsage
+
+    from pai_agent_sdk.context import ExtraUsageRecord, ResumableState
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        # Add extra_usages with RunUsage dataclass
+        ctx.extra_usages.append(
+            ExtraUsageRecord(
+                uuid="usage-1",
+                agent="search",
+                usage=RunUsage(input_tokens=100, output_tokens=200),
+            )
+        )
+        ctx.extra_usages.append(
+            ExtraUsageRecord(
+                uuid="usage-2",
+                agent="compact",
+                usage=RunUsage(input_tokens=50, output_tokens=75, requests=1, tool_calls=2),
+            )
+        )
+
+        state = ctx.export_state()
+
+        # Serialize to JSON string
+        json_str = state.model_dump_json()
+        assert isinstance(json_str, str)
+        assert "usage-1" in json_str
+        assert "usage-2" in json_str
+
+        # Deserialize from JSON string
+        restored_state = ResumableState.model_validate_json(json_str)
+
+        # Verify extra_usages restored correctly
+        assert len(restored_state.extra_usages) == 2
+
+        # Verify first record
+        rec1 = restored_state.extra_usages[0]
+        assert rec1.uuid == "usage-1"
+        assert rec1.agent == "search"
+        assert isinstance(rec1.usage, RunUsage)
+        assert rec1.usage.input_tokens == 100
+        assert rec1.usage.output_tokens == 200
+
+        # Verify second record with additional fields
+        rec2 = restored_state.extra_usages[1]
+        assert rec2.uuid == "usage-2"
+        assert rec2.agent == "compact"
+        assert rec2.usage.input_tokens == 50
+        assert rec2.usage.output_tokens == 75
+        assert rec2.usage.requests == 1
+        assert rec2.usage.tool_calls == 2

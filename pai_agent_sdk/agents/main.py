@@ -14,13 +14,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic
 
 import jinja2
-from pydantic_ai import Agent
+from pydantic_ai import Agent, DeferredToolResults
 from pydantic_ai._agent_graph import CallToolsNode, HistoryProcessor, ModelRequestNode
 from pydantic_ai.messages import ModelMessage, UserContent
-from pydantic_ai.models import Model
+from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.run import AgentRun
 from typing_extensions import TypeVar
 
+from pai_agent_sdk._logger import get_logger
 from pai_agent_sdk.agents.compact import create_compact_filter
 from pai_agent_sdk.agents.models import infer_model
 from pai_agent_sdk.context import (
@@ -44,6 +45,8 @@ if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
 
     from pai_agent_sdk.subagents import SubagentConfig
+
+logger = get_logger(__name__)
 
 # =============================================================================
 # Type Variables
@@ -118,7 +121,7 @@ def _load_system_prompt(template_vars: dict[str, Any] | None = None) -> str:
 
 @asynccontextmanager
 async def create_agent(
-    model: str | Model,
+    model: Model | KnownModelName | str | None,
     *,
     # --- Model Configuration ---
     model_settings: ModelSettings | None = None,
@@ -234,6 +237,7 @@ async def create_agent(
     """
     async with AsyncExitStack() as stack:
         # --- Environment Setup ---
+        logger.debug("Setting up environment: %s", type(env).__name__ if isinstance(env, Environment) else env.__name__)
         if isinstance(env, Environment):
             entered_env = env
             # If already an instance, enter it
@@ -241,6 +245,7 @@ async def create_agent(
         else:
             # Create and enter new environment instance
             entered_env = await stack.enter_async_context(env(**(env_kwargs or {})))
+        logger.debug("Environment ready: %s", entered_env)
 
         # --- Build Configs ---
         effective_model_cfg = model_cfg or ModelConfig()
@@ -257,6 +262,7 @@ async def create_agent(
                 **(extra_context_kwargs or {}),
             ).with_state(state)
         )
+        logger.debug("Context created: %s (run_id=%s)", type(ctx).__name__, ctx.run_id)
 
         # --- Toolset Setup ---
         all_toolsets: list[AbstractToolset[Any]] = []
@@ -264,6 +270,7 @@ async def create_agent(
 
         # Create Toolset from BaseTool classes if provided
         if tools:
+            logger.debug("Creating core toolset with %d tools", len(tools))
             core_toolset = Toolset(
                 ctx,
                 tools=tools,
@@ -284,6 +291,7 @@ async def create_agent(
                     all_subagent_configs.extend(get_builtin_subagent_configs().values())
 
                 if all_subagent_configs:
+                    logger.debug("Adding %d subagent configs to toolset", len(all_subagent_configs))
                     core_toolset = core_toolset.with_subagents(
                         all_subagent_configs,
                         model=model,
@@ -316,6 +324,8 @@ async def create_agent(
                 model=compact_model,
                 model_settings=compact_model_settings,
                 model_cfg=compact_model_cfg or effective_model_cfg,
+                main_model=model,
+                main_model_settings=model_settings,
             ),
             create_environment_instructions_filter(entered_env),
             create_system_prompt_filter(system_prompt=effective_system_prompt),
@@ -324,6 +334,7 @@ async def create_agent(
             all_processors.extend(history_processors)
 
         # --- Create Agent ---
+        logger.debug("Creating agent with model=%s, output_type=%s", model, output_type)
         agent: Agent[AgentDepsT, OutputT] = add_toolset_instructions(
             Agent(
                 model=infer_model(model) if isinstance(model, str) else model,
@@ -342,6 +353,11 @@ async def create_agent(
             all_toolsets,
         )
 
+        logger.debug(
+            "Agent created: toolsets=%d, history_processors=%d",
+            len(all_toolsets) if all_toolsets else 0,
+            len(all_processors) if all_processors else 0,
+        )
         yield AgentRuntime(env=entered_env, ctx=ctx, agent=agent, core_toolset=core_toolset)
 
 
@@ -358,11 +374,13 @@ class NodeHookContext(Generic[AgentDepsT, OutputT]):
         agent_info: Metadata about the current agent.
         node: The current graph node (ModelRequestNode or CallToolsNode).
         run: The AgentRun instance from agent.iter().
+        output_queue: Queue for emitting custom StreamEvent to the output stream.
     """
 
     agent_info: AgentInfo
     node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT]
     run: AgentRun[AgentDepsT, OutputT]
+    output_queue: asyncio.Queue[StreamEvent]
 
 
 @dataclass
@@ -374,12 +392,14 @@ class EventHookContext(Generic[AgentDepsT, OutputT]):
         event: The stream event being yielded.
         node: The current graph node.
         run: The AgentRun instance from agent.iter().
+        output_queue: Queue for emitting custom StreamEvent to the output stream.
     """
 
     agent_info: AgentInfo
     event: SubagentStreamEvent
     node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT]
     run: AgentRun[AgentDepsT, OutputT]
+    output_queue: asyncio.Queue[StreamEvent]
 
 
 # Hook type aliases
@@ -399,19 +419,29 @@ class AgentStreamer(Generic[AgentDepsT, OutputT]):
     This class wraps the merged event stream and provides control methods
     for interrupting the stream.
 
+    Attributes:
+        run: The AgentRun instance. None until agent.iter() starts, available during
+            and after streaming. Use to access messages, usage, and result.
+
     Example::
 
         async with stream_agent(agent, "Hello", ctx=ctx) as streamer:
             async for event in streamer:
                 print(f"[{event.agent_name}] {event.event}")
+                if streamer.run:
+                    print(f"Messages so far: {len(streamer.run.all_messages())}")
                 if should_stop:
                     streamer.interrupt()
                     break
+            # After streaming, access final result and usage
+            if streamer.run:
+                print(f"Usage: {streamer.run.usage()}")
     """
 
     _event_generator: AsyncIterator[StreamEvent]
     _cancel_event: asyncio.Event
     _tasks: list[asyncio.Task[None]] = field(default_factory=list)
+    run: AgentRun[AgentDepsT, OutputT] | None = None
 
     def interrupt(self) -> None:
         """Interrupt the stream, causing iteration to stop."""
@@ -436,6 +466,7 @@ async def stream_agent(  # noqa: C901
     *,
     ctx: AgentDepsT,
     message_history: Sequence[ModelMessage] | None = None,
+    deferred_tool_results: DeferredToolResults | None = None,
     # Hooks
     pre_node_hook: NodeHook[AgentDepsT, OutputT] | None = None,
     post_node_hook: NodeHook[AgentDepsT, OutputT] | None = None,
@@ -483,9 +514,15 @@ async def stream_agent(  # noqa: C901
     main_done = asyncio.Event()
     poll_done = asyncio.Event()
 
+    logger.debug(
+        "Starting stream_agent with user_prompt=%s",
+        user_prompt[:100] if isinstance(user_prompt, str) else type(user_prompt),
+    )
+
     # Register main agent
     main_agent_info = AgentInfo(agent_id="main", agent_name="main")
     ctx.agent_registry["main"] = main_agent_info
+    ctx.user_prompts = user_prompt
 
     async def process_node(
         node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT],
@@ -493,8 +530,11 @@ async def stream_agent(  # noqa: C901
     ) -> bool:
         """Process a single node with hooks. Returns False if cancelled."""
         # PRE NODE HOOK
+        logger.debug("Processing node: %s", type(node).__name__)
         if pre_node_hook:
-            await pre_node_hook(NodeHookContext(agent_info=main_agent_info, node=node, run=run))
+            await pre_node_hook(
+                NodeHookContext(agent_info=main_agent_info, node=node, run=run, output_queue=output_queue)
+            )
 
         async with node.stream(run.ctx) as request_stream:
             async for event in request_stream:
@@ -503,23 +543,38 @@ async def stream_agent(  # noqa: C901
 
                 # PRE EVENT HOOK
                 if pre_event_hook:
-                    await pre_event_hook(EventHookContext(agent_info=main_agent_info, event=event, node=node, run=run))
+                    await pre_event_hook(
+                        EventHookContext(
+                            agent_info=main_agent_info, event=event, node=node, run=run, output_queue=output_queue
+                        )
+                    )
 
                 await output_queue.put(StreamEvent(agent_id="main", agent_name="main", event=event))
 
                 # POST EVENT HOOK
                 if post_event_hook:
-                    await post_event_hook(EventHookContext(agent_info=main_agent_info, event=event, node=node, run=run))
+                    await post_event_hook(
+                        EventHookContext(
+                            agent_info=main_agent_info, event=event, node=node, run=run, output_queue=output_queue
+                        )
+                    )
 
         # POST NODE HOOK
+        logger.debug("Node completed: %s", type(node).__name__)
         if post_node_hook:
-            await post_node_hook(NodeHookContext(agent_info=main_agent_info, node=node, run=run))
+            await post_node_hook(
+                NodeHookContext(agent_info=main_agent_info, node=node, run=run, output_queue=output_queue)
+            )
         return True
 
     async def run_main() -> None:
         """Run the main agent and push events to output_queue."""
+        logger.debug("Main agent task started")
         try:
-            async with agent.iter(user_prompt, deps=ctx, message_history=message_history) as run:
+            async with agent.iter(
+                user_prompt, deps=ctx, message_history=message_history, deferred_tool_results=deferred_tool_results
+            ) as run:
+                streamer.run = run  # Expose run immediately
                 async for node in run:
                     if cancel_event.is_set():
                         return
@@ -530,11 +585,16 @@ async def stream_agent(  # noqa: C901
                     if Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):  # noqa: SIM102
                         if not await process_node(node, run):
                             return
+        except Exception:
+            logger.exception("Error in main agent task")
+            raise
         finally:
+            logger.debug("Main agent task finished")
             main_done.set()
 
     async def poll_subagents() -> None:
         """Poll subagent stream queues and push events to output_queue."""
+        logger.debug("Subagent polling task started")
         try:
             while True:
                 # Check exit condition: main done and all queues empty
@@ -563,6 +623,7 @@ async def stream_agent(  # noqa: C901
 
                 await asyncio.sleep(0.001)  # Yield control to avoid busy loop
         finally:
+            logger.debug("Subagent polling task finished")
             poll_done.set()
 
     async def generate_events() -> AsyncIterator[StreamEvent]:

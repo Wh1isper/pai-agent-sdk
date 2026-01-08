@@ -2,6 +2,15 @@ ci:
   skip: [sync-skills]
 
 repos:
+  - repo: local
+    hooks:
+      - id: sync-skills
+        name: Sync docs and .env.example to skills folder
+        entry: bash scripts/sync-skills.sh
+        language: system
+        pass_filenames: false
+        files: ^(docs/|README\.md|llms.*\.txt|\.env\.example)
+        stages: [pre-commit]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v6.0.0"
     hooks:
@@ -30,12 +39,3 @@ repos:
       - id: ruff
         args: [--exit-non-zero-on-fix]
       - id: ruff-format
-  - repo: local
-    hooks:
-      - id: sync-skills
-        name: Sync docs and .env.example to skills folder
-        entry: bash scripts/sync-skills.sh
-        language: system
-        pass_filenames: false
-        files: ^(docs/|README\.md|llms.*\.txt|\.env\.example)
-        stages: [pre-commit]

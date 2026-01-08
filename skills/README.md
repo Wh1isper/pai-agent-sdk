@@ -11,15 +11,27 @@ Toolsets and context management for building agents with Pydantic AI.
 ## Installation
 
 ```bash
-# Using pip
-pip install pai-agent-sdk
+# Recommended: install with all optional dependencies
+pip install pai-agent-sdk[all]
+uv add pai-agent-sdk[all]
 
-# Using uv
-uv add pai-agent-sdk
-
-# With Docker sandbox support
-pip install pai-agent-sdk[docker]
+# Or install individual extras as needed
+pip install pai-agent-sdk[docker]    # Docker sandbox support
+pip install pai-agent-sdk[web]       # Web tools (tavily, firecrawl, markitdown)
+pip install pai-agent-sdk[document]  # Document processing (pymupdf, markitdown)
 ```
+
+## For Agent Users
+
+If you're using an AI agent (e.g., Claude, Cursor) that supports skills, you can download the latest `SKILL.zip` from the [Releases](https://github.com/wh1isper/pai-agent-sdk/releases) page. The skill package is automatically built and uploaded during each release via GitHub Actions.
+
+## Quick Start
+
+Check out the [examples/](examples/) directory for ready-to-run examples:
+
+- [hello_world.py](examples/hello_world.py) - Basic agent setup and usage
+- [coding.py](examples/coding.py) - Coding assistant example
+- [deepresearch.py](examples/deepresearch.py) - Deep research agent example
 
 ## Configuration
 

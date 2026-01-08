@@ -58,7 +58,7 @@ Example:
 
 import asyncio
 from collections import defaultdict
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -69,7 +69,7 @@ from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
-from pydantic_ai import ModelSettings, RunContext
+from pydantic_ai import ModelSettings, RunContext, UserContent
 from pydantic_ai.messages import HandleResponseEvent as PydanticHandleResponseEvent
 from pydantic_ai.messages import (
     ModelMessage,
@@ -148,7 +148,7 @@ class ResumableState(BaseModel):
     extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
     """Extra usage records from tool calls and filters."""
 
-    user_prompts: list[str] = Field(default_factory=list)
+    user_prompts: str | Sequence[UserContent] | None = None
     """User prompts collected during the session."""
 
     handoff_message: str | None = None
@@ -191,7 +191,7 @@ class ResumableState(BaseModel):
         """
         ctx.subagent_history = self.to_subagent_history()
         ctx.extra_usages = list(self.extra_usages)
-        ctx.user_prompts = list(self.user_prompts)
+        ctx.user_prompts = self.user_prompts
         ctx.handoff_message = self.handoff_message
         ctx.deferred_tool_metadata = dict(self.deferred_tool_metadata)
         # Restore agent_registry from serialized format
@@ -450,7 +450,7 @@ class ModelConfig(BaseModel):
     proactive_context_management_threshold: float | None = None
     """Proactive context management threshold. When token usage exceeds this ratio, reminders are triggered."""
 
-    compact_threshold: float = 0.8
+    compact_threshold: float = 0.90
     """Compact threshold for auto-compaction. When token usage exceeds this ratio, compact is triggered."""
 
     max_images: int = 20
@@ -583,7 +583,7 @@ class AgentContext(BaseModel):
     extra_usages: list[ExtraUsageRecord] = Field(default_factory=list)
     """Extra usage records from tool calls and filters."""
 
-    user_prompts: list[str] = Field(default_factory=list)
+    user_prompts: str | Sequence[UserContent] | None = None
     """User prompts collected during the session for compact."""
 
     tool_id_wrapper: ToolIdWrapper = Field(default_factory=ToolIdWrapper)
@@ -668,7 +668,7 @@ class AgentContext(BaseModel):
         # Cast metadata to typed dict for type safety
         metadata = cast(
             RunContextMetadata,
-            run_context.metadata if run_context and run_context.deps else {},
+            run_context.metadata if run_context and run_context.metadata else {},
         )
 
         # Handoff threshold warning
@@ -841,7 +841,7 @@ class AgentContext(BaseModel):
         return ResumableState(
             subagent_history=serialized_history,
             extra_usages=list(self.extra_usages),
-            user_prompts=list(self.user_prompts),
+            user_prompts=self.user_prompts,
             handoff_message=self.handoff_message,
             deferred_tool_metadata=dict(self.deferred_tool_metadata),
             agent_registry=serialized_registry,

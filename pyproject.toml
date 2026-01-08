@@ -15,9 +15,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+
 dependencies = [
     "anyio>=4.12.0",
-    "cdp-use>=1.4.4, < 2.0.0",
+    "cdp-use>=1.4.4,<2.0.0",
     "httpx>=0.28.1",
     "jinja2>=3.0.0",
     "pathspec>=0.12.0",
@@ -36,20 +38,12 @@ Repository = "https://github.com/wh1isper/pai-agent-sdk"
 Documentation = "https://wh1isper.github.io/pai-agent-sdk/"
 
 [project.optional-dependencies]
+examples = ["pydantic-ai",
+    "python-dotenv"]
 docker = ["docker>=7.0.0"]
-web = [
-    "tavily-python>=0.7.0",
-    "firecrawl-py>=4.0.0",
-    "markitdown[all]>=0.1.2",
-]
-document = [
-    "pymupdf>=1.26.0",
-    "pymupdf4llm>=0.2.0",
-    "markitdown[all]>=0.1.2",
-]
-all = [
-    "pai-agent-sdk[docker,web,document]",
-]
+web = ["tavily-python>=0.7.0", "firecrawl-py>=4.0.0", "markitdown[all]>=0.1.2"]
+document = ["pymupdf>=1.26.0", "pymupdf4llm>=0.2.0", "markitdown[all]>=0.1.2"]
+all = ["pai-agent-sdk[docker,web,document,examples]"]
 
 [dependency-groups]
 dev = [
@@ -59,7 +53,7 @@ dev = [
     "pytest-xdist>=3.0.0",
 
     "deptry>=0.22.0",
-    "pyright>=1.1.390",
+    "pyright>=1.1.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.9.2",
     "inline-snapshot>=0.20.0",
@@ -72,6 +66,9 @@ dev = [
     "markitdown[all]>=0.1.2",
     "pymupdf>=1.25.0",
     "pymupdf4llm>=0.0.17",
+    # For examples
+    "pydantic-ai",
+    "python-dotenv",
 ]
 
 [build-system]
@@ -114,7 +111,8 @@ select = [
     # mccabe
     "C90",
     # pycodestyle
-    "E", "W",
+    "E",
+    "W",
     # pyflakes
     "F",
     # pygrep-hooks
@@ -141,6 +139,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904"]
+"skills/examples/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904", "E402"]
+"examples/*" = ["S101", "SIM117", "RUF059", "TRY400", "B904", "E402"]
+
 
 [tool.ruff.format]
 preview = true
@@ -149,7 +150,7 @@ preview = true
 # anthropic is a transitive dependency from pydantic-ai-slim
 # pai-agent-sdk is self-reference in optional dependencies
 ignore = ["DEP001", "DEP002"]
-per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["pai-agent-sdk"] }
+per_rule_ignores = { DEP001 = ["anthropic"], DEP002 = ["pai-agent-sdk"], DEP003 = ['anthropic']}
 
 [tool.coverage.report]
 skip_empty = true

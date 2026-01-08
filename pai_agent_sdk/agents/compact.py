@@ -7,12 +7,12 @@ the conversation.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelSettings
+from pydantic_ai import Agent, ModelSettings, UserContent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -89,6 +89,10 @@ class CondenseResult(BaseModel):
 8. If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
 """,
     )
+    original_prompt: str = Field(
+        ...,
+        description="The original prompt and key information from the user.",
+    )
 
 
 # =============================================================================
@@ -99,33 +103,54 @@ class CondenseResult(BaseModel):
 def get_compact_agent(
     model: str | Model | None = None,
     model_settings: ModelSettings | None = None,
+    main_model: str | Model | None = None,
+    main_model_settings: ModelSettings | None = None,
 ) -> Agent[AgentContext, CondenseResult]:
     """Create a compact agent.
 
     Args:
-        model: Model string or Model instance. If None, uses config setting.
+        model: Model string or Model instance. Highest priority.
         model_settings: Optional model settings dict.
-        history_processors: Optional list of history processors to apply.
+        main_model: Fallback model inherited from main agent. Lowest priority.
+        main_model_settings: Fallback model settings inherited from main agent.
+
+    Model resolution priority:
+        1. model parameter (explicit configuration)
+        2. PAI_AGENT_COMPACT_MODEL environment variable
+        3. main_model parameter (inherited from main agent)
 
     Returns:
         Agent configured for compact with AgentContext as deps type.
 
     Raises:
-        ValueError: If no model is specified and config has no default.
+        ValueError: If no model is available from any source.
     """
-    if model is None:
+    effective_model: str | Model | None = model
+    effective_settings: ModelSettings | None = model_settings
+
+    # Priority: model > env var > main_model
+    if effective_model is None:
         settings = AgentSettings()
         if settings.compact_model:
-            model = settings.compact_model
+            effective_model = settings.compact_model
+        elif main_model is not None:
+            effective_model = main_model
         else:
-            raise ValueError("No model specified. Provide model parameter or set PAI_AGENT_COMPACT_MODEL.")
+            raise ValueError(
+                "No model specified. Provide model parameter, set PAI_AGENT_COMPACT_MODEL, "
+                "or pass main_model for inheritance."
+            )
 
-    model_instance = infer_model(model) if isinstance(model, str) else model
+    # model_settings: model_settings > main_model_settings
+    if effective_settings is None and main_model_settings is not None:
+        effective_settings = main_model_settings
+
+    model_instance = infer_model(effective_model) if isinstance(effective_model, str) else effective_model
 
     system_prompt = _load_system_prompt()
     return Agent[AgentContext, CondenseResult](
         model_instance,
-        model_settings=model_settings,
+        model_settings=effective_settings,
         output_type=CondenseResult,
         deps_type=AgentContext,
         system_prompt=system_prompt,
@@ -181,6 +206,7 @@ def _need_compact(ctx: AgentContext, message_history: list[ModelMessage]) -> boo
 
     model_cfg = ctx.model_cfg
     if model_cfg.context_window is None:
+        logger.debug("Unknown context window, skipping compact check.")
         return False
 
     # Get current token usage from message history
@@ -195,23 +221,7 @@ def _need_compact(ctx: AgentContext, message_history: list[ModelMessage]) -> boo
     return current_tokens >= threshold_tokens
 
 
-def _build_user_prompts_xml(user_prompts: list[str]) -> str:
-    """Build XML formatted user prompts section.
-
-    Args:
-        user_prompts: List of user prompts.
-
-    Returns:
-        XML formatted string.
-    """
-    if not user_prompts:
-        return ""
-
-    prompts_xml = "\n".join(f"<message>{prompt}</message>" for prompt in user_prompts)
-    return f"<previous-user-messages>\n{prompts_xml}\n</previous-user-messages>\n\n<compact-complete>Context compacted. Resume task.</compact-complete>"
-
-
-def _build_compacted_messages(summary: str, continue_prompt: str) -> list[ModelMessage]:
+def _build_compacted_messages(summary: str, original_prompt: str | Sequence[UserContent]) -> list[ModelMessage]:
     """Build compacted message history.
 
     Args:
@@ -232,7 +242,12 @@ def _build_compacted_messages(summary: str, continue_prompt: str) -> list[ModelM
     return [
         ModelRequest(parts=request_parts),
         ModelResponse(parts=[TextPart(content=summary)]),
-        ModelRequest(parts=[UserPromptPart(content=continue_prompt)]),
+        ModelRequest(
+            parts=[
+                UserPromptPart(content=original_prompt),
+                UserPromptPart(content="<compact-complete>Context compacted. Resume task.</compact-complete>"),
+            ]
+        ),
     ]
 
 
@@ -240,6 +255,8 @@ def create_compact_filter(
     model: str | Model | None = None,
     model_settings: ModelSettings | None = None,
     model_cfg: ModelConfig | None = None,
+    main_model: str | Model | None = None,
+    main_model_settings: ModelSettings | None = None,
 ) -> Callable[[RunContext[AgentContext], list[ModelMessage]], Awaitable[list[ModelMessage]]]:
     """Create a compact filter for automatic context compaction.
 
@@ -247,10 +264,16 @@ def create_compact_filter(
     when usage exceeds the configured threshold (ModelConfig.compact_threshold).
 
     Args:
-        model: Model string or Model instance for the compact agent.
+        model: Model string or Model instance for the compact agent. Highest priority.
         model_settings: Optional model settings for the compact agent.
-        system_prompt: Optional system prompt to include in compacted messages.
-        history_processors: Optional list of history processors for the compact agent.
+        model_cfg: Model configuration for threshold checking.
+        main_model: Fallback model inherited from main agent. Lowest priority.
+        main_model_settings: Fallback model settings inherited from main agent.
+
+    Model resolution priority:
+        1. model parameter (explicit configuration)
+        2. PAI_AGENT_COMPACT_MODEL environment variable
+        3. main_model parameter (inherited from main agent)
 
     Returns:
         An async filter function compatible with pydantic-ai history_processors.
@@ -264,7 +287,12 @@ def create_compact_filter(
             history_processors=[compact_filter],
         )
     """
-    agent = get_compact_agent(model=model, model_settings=model_settings)
+    agent = get_compact_agent(
+        model=model,
+        model_settings=model_settings,
+        main_model=main_model,
+        main_model_settings=main_model_settings,
+    )
 
     async def compact_filter(
         ctx: RunContext[AgentContext],
@@ -304,10 +332,11 @@ def create_compact_filter(
 
             # Build summary with condense result and user prompts
             condense_markdown = condense_result_to_markdown(condense_result)
-            continue_user_prompts_xml = _build_user_prompts_xml(agent_ctx.user_prompts)
 
             # Build compacted messages
-            compacted = _build_compacted_messages(condense_markdown, continue_user_prompts_xml)
+            compacted = _build_compacted_messages(
+                condense_markdown, agent_ctx.user_prompts or condense_result.original_prompt
+            )
 
             logger.info(f"Compacted history from {len(message_history)} messages to {len(compacted)} messages")
             return compacted
