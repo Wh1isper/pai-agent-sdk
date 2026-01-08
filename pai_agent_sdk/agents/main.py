@@ -6,21 +6,32 @@ with proper environment and context lifecycle management.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic
 
 import jinja2
 from pydantic_ai import Agent
-from pydantic_ai._agent_graph import HistoryProcessor
+from pydantic_ai._agent_graph import CallToolsNode, HistoryProcessor, ModelRequestNode
+from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.models import Model
+from pydantic_ai.run import AgentRun
 from typing_extensions import TypeVar
 
 from pai_agent_sdk.agents.compact import create_compact_filter
 from pai_agent_sdk.agents.models import infer_model
-from pai_agent_sdk.context import AgentContext, ModelConfig, ResumableState, ToolConfig
+from pai_agent_sdk.context import (
+    AgentContext,
+    AgentInfo,
+    ModelConfig,
+    ResumableState,
+    StreamEvent,
+    SubagentStreamEvent,
+    ToolConfig,
+)
 from pai_agent_sdk.environment.base import Environment
 from pai_agent_sdk.environment.local import LocalEnvironment
 from pai_agent_sdk.filters.environment_instructions import create_environment_instructions_filter
@@ -304,3 +315,257 @@ async def create_agent(
         )
 
         yield AgentRuntime(env=entered_env, ctx=ctx, agent=agent, core_toolset=core_toolset)
+
+
+# =============================================================================
+# Stream Hook Types
+# =============================================================================
+
+
+@dataclass
+class NodeHookContext(Generic[AgentDepsT, OutputT]):
+    """Context passed to node-level hooks (pre/post node.stream).
+
+    Attributes:
+        agent_info: Metadata about the current agent.
+        node: The current graph node (ModelRequestNode or CallToolsNode).
+        run: The AgentRun instance from agent.iter().
+    """
+
+    agent_info: AgentInfo
+    node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT]
+    run: AgentRun[AgentDepsT, OutputT]
+
+
+@dataclass
+class EventHookContext(Generic[AgentDepsT, OutputT]):
+    """Context passed to event-level hooks (pre/post each event yield).
+
+    Attributes:
+        agent_info: Metadata about the current agent.
+        event: The stream event being yielded.
+        node: The current graph node.
+        run: The AgentRun instance from agent.iter().
+    """
+
+    agent_info: AgentInfo
+    event: SubagentStreamEvent
+    node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT]
+    run: AgentRun[AgentDepsT, OutputT]
+
+
+# Hook type aliases
+NodeHook = Callable[[NodeHookContext[AgentDepsT, OutputT]], Awaitable[None]]
+EventHook = Callable[[EventHookContext[AgentDepsT, OutputT]], Awaitable[None]]
+
+
+# =============================================================================
+# Agent Streamer
+# =============================================================================
+
+
+@dataclass
+class AgentStreamer(Generic[AgentDepsT, OutputT]):
+    """Async iterator for streaming agent events with interrupt capability.
+
+    This class wraps the merged event stream and provides control methods
+    for interrupting the stream.
+
+    Example::
+
+        async with stream_agent(agent, "Hello", ctx=ctx) as streamer:
+            async for event in streamer:
+                print(f"[{event.agent_name}] {event.event}")
+                if should_stop:
+                    streamer.interrupt()
+                    break
+    """
+
+    _event_generator: AsyncIterator[StreamEvent]
+    _cancel_event: asyncio.Event
+    _tasks: list[asyncio.Task[None]] = field(default_factory=list)
+
+    def interrupt(self) -> None:
+        """Interrupt the stream, causing iteration to stop."""
+        self._cancel_event.set()
+
+    def __aiter__(self) -> AsyncIterator[StreamEvent]:
+        return self._event_generator
+
+    async def __anext__(self) -> StreamEvent:
+        return await self._event_generator.__anext__()
+
+
+# =============================================================================
+# Stream Agent
+# =============================================================================
+
+
+@asynccontextmanager
+async def stream_agent(  # noqa: C901
+    agent: Agent[AgentDepsT, OutputT],
+    user_prompt: str | Sequence[UserContent] | None = None,
+    *,
+    ctx: AgentDepsT,
+    message_history: Sequence[ModelMessage] | None = None,
+    # Hooks
+    pre_node_hook: NodeHook[AgentDepsT, OutputT] | None = None,
+    post_node_hook: NodeHook[AgentDepsT, OutputT] | None = None,
+    pre_event_hook: EventHook[AgentDepsT, OutputT] | None = None,
+    post_event_hook: EventHook[AgentDepsT, OutputT] | None = None,
+) -> AsyncIterator[AgentStreamer[AgentDepsT, OutputT]]:
+    """Stream agent execution with subagent event aggregation.
+
+    This context manager runs the agent and yields a streamer that merges
+    events from the main agent and all subagents into a single stream.
+
+    Args:
+        agent: The pydantic-ai Agent to run.
+        user_prompt: The prompt to send to the agent. Can be string or
+            sequence of UserContent for multimodal input.
+        ctx: The AgentContext for this run.
+        message_history: Optional conversation history.
+        pre_node_hook: Called before node.stream() starts.
+        post_node_hook: Called after node.stream() completes.
+        pre_event_hook: Called before each event is yielded.
+        post_event_hook: Called after each event is yielded.
+
+    Yields:
+        AgentStreamer that can be iterated for StreamEvent objects.
+        Each event contains agent_id, agent_name, and the raw event.
+
+    Example::
+
+        async with create_agent("openai:gpt-4") as runtime:
+            async with stream_agent(
+                runtime.agent,
+                "Search for Python tutorials",
+                ctx=runtime.ctx,
+            ) as streamer:
+                async for event in streamer:
+                    if event.agent_name == "main":
+                        # Handle main agent events
+                        pass
+                    else:
+                        # Handle subagent events
+                        pass
+    """
+    output_queue: asyncio.Queue[StreamEvent] = asyncio.Queue()
+    cancel_event = asyncio.Event()
+    main_done = asyncio.Event()
+    poll_done = asyncio.Event()
+
+    # Register main agent
+    main_agent_info = AgentInfo(agent_id="main", agent_name="main")
+    ctx.agent_registry["main"] = main_agent_info
+
+    async def process_node(
+        node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT],
+        run: AgentRun[AgentDepsT, OutputT],
+    ) -> bool:
+        """Process a single node with hooks. Returns False if cancelled."""
+        # PRE NODE HOOK
+        if pre_node_hook:
+            await pre_node_hook(NodeHookContext(agent_info=main_agent_info, node=node, run=run))
+
+        async with node.stream(run.ctx) as request_stream:
+            async for event in request_stream:
+                if cancel_event.is_set():
+                    return False
+
+                # PRE EVENT HOOK
+                if pre_event_hook:
+                    await pre_event_hook(EventHookContext(agent_info=main_agent_info, event=event, node=node, run=run))
+
+                await output_queue.put(StreamEvent(agent_id="main", agent_name="main", event=event))
+
+                # POST EVENT HOOK
+                if post_event_hook:
+                    await post_event_hook(EventHookContext(agent_info=main_agent_info, event=event, node=node, run=run))
+
+        # POST NODE HOOK
+        if post_node_hook:
+            await post_node_hook(NodeHookContext(agent_info=main_agent_info, node=node, run=run))
+        return True
+
+    async def run_main() -> None:
+        """Run the main agent and push events to output_queue."""
+        try:
+            async with agent.iter(user_prompt, deps=ctx, message_history=message_history) as run:
+                async for node in run:
+                    if cancel_event.is_set():
+                        return
+
+                    if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
+                        continue
+
+                    if Agent.is_model_request_node(node) or Agent.is_call_tools_node(node):  # noqa: SIM102
+                        if not await process_node(node, run):
+                            return
+        finally:
+            main_done.set()
+
+    async def poll_subagents() -> None:
+        """Poll subagent stream queues and push events to output_queue."""
+        try:
+            while True:
+                # Check exit condition: main done and all queues empty
+                if main_done.is_set():
+                    all_empty = all(q.empty() for q in ctx.subagent_stream_queues.values())
+                    if all_empty:
+                        return
+
+                if cancel_event.is_set():
+                    return
+
+                # Collect events from all subagent queues
+                for agent_id, queue in list(ctx.subagent_stream_queues.items()):
+                    try:
+                        event = queue.get_nowait()
+                        agent_info = ctx.agent_registry.get(agent_id)
+                        await output_queue.put(
+                            StreamEvent(
+                                agent_id=agent_id,
+                                agent_name=agent_info.agent_name if agent_info else "unknown",
+                                event=event,
+                            )
+                        )
+                    except asyncio.QueueEmpty:
+                        pass
+
+                await asyncio.sleep(0.001)  # Yield control to avoid busy loop
+        finally:
+            poll_done.set()
+
+    async def generate_events() -> AsyncIterator[StreamEvent]:
+        """Consume from output_queue and yield events."""
+        while True:
+            # Check exit condition: poll done and output queue empty
+            if poll_done.is_set() and output_queue.empty():
+                return
+
+            if cancel_event.is_set():
+                return
+
+            try:
+                event = await asyncio.wait_for(output_queue.get(), timeout=0.1)
+                yield event
+            except TimeoutError:
+                continue
+
+    # Start producer tasks
+    main_task = asyncio.create_task(run_main())
+    poll_task = asyncio.create_task(poll_subagents())
+
+    streamer: AgentStreamer[AgentDepsT, OutputT] = AgentStreamer(
+        _event_generator=generate_events(),
+        _cancel_event=cancel_event,
+        _tasks=[main_task, poll_task],
+    )
+
+    try:
+        yield streamer
+    finally:
+        cancel_event.set()
+        # Wait for tasks to complete
+        await asyncio.gather(main_task, poll_task, return_exceptions=True)

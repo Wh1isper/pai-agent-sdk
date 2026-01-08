@@ -1,9 +1,7 @@
 """Tests for pai_agent_sdk.utils module."""
 
 import io
-from collections.abc import AsyncIterator
 
-import pytest
 from PIL import Image
 from pydantic_ai.messages import BinaryContent, ModelResponse, ToolCallPart
 
@@ -11,7 +9,6 @@ from pai_agent_sdk.utils import (
     _split_image_data_sync,
     get_available_port,
     get_tool_name_from_id,
-    merge_async_iterators,
     run_in_threadpool,
     split_image_data,
 )
@@ -53,27 +50,6 @@ async def test_run_in_threadpool_passes_kwargs() -> None:
 
     result = await run_in_threadpool(sync_func, 5, multiplier=3)
     assert result == 15
-
-
-# --- merge_async_iterators tests ---
-
-
-async def test_merge_async_iterators_empty() -> None:
-    """Should handle no iterators."""
-    results = [item async for item in merge_async_iterators()]
-    assert results == []
-
-
-async def test_merge_async_iterators_error_propagates() -> None:
-    """Should propagate errors from iterators."""
-
-    async def failing_gen() -> AsyncIterator[int]:
-        yield 1
-        raise ValueError("test error")
-
-    with pytest.raises(ValueError, match="test error"):
-        async for _ in merge_async_iterators(failing_gen()):
-            pass
 
 
 # --- get_tool_name_from_id tests ---

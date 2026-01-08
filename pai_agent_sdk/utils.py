@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
-import contextvars
 import functools
 import io
 import socket
 import typing
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 import anyio.to_thread
@@ -21,7 +18,6 @@ if TYPE_CHECKING:
 
 P = typing.ParamSpec("P")
 T = typing.TypeVar("T")
-U = typing.TypeVar("U")
 
 ImageMediaType = Literal["image/png", "image/jpeg", "image/gif", "image/webp"]
 
@@ -44,83 +40,6 @@ async def run_in_threadpool(func: typing.Callable[P, T], *args: P.args, **kwargs
     # copied from fastapi.concurrency import run_in_threadpool
     func = functools.partial(func, *args, **kwargs)
     return await anyio.to_thread.run_sync(func)
-
-
-async def _pump_iterator(
-    idx: int,
-    it: AsyncIterator[U],
-    data_q: asyncio.Queue[tuple[int, U]],
-    ctrl_q: asyncio.Queue[tuple[str, int, BaseException | None]],
-) -> None:
-    """Pump items from an async iterator into the data queue and signal completion."""
-    try:
-        async for item in it:
-            await data_q.put((idx, item))
-        await ctrl_q.put(("done", idx, None))
-    except BaseException as e:
-        await ctrl_q.put(("error", idx, e))
-
-
-async def _cleanup_tasks(tasks: list[asyncio.Task], pending: set[asyncio.Task]) -> None:
-    """Cancel and cleanup all tasks."""
-    for t in pending:
-        t.cancel()
-    for t in tasks:
-        if not t.done():
-            t.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def merge_async_iterators(*iterators: AsyncIterator[U]) -> AsyncIterator[U]:
-    """Merge multiple async iterators into a single stream with context preservation.
-
-    Each iterator runs in a separate task with preserved context variables.
-    The operation exits immediately when any iterator completes or encounters an error.
-    When both data and completion signals are ready simultaneously,
-    completion signals take priority to maintain "exit-on-first-completion" semantics.
-
-    Args:
-        *iterators: The async iterators to merge
-
-    Yields:
-        Items from the iterators as they become available
-
-    Raises:
-        InterruptError: If any iterator raises InterruptError
-        BaseException: If any iterator raises other exceptions
-    """
-    if not iterators:
-        return
-
-    data_q: asyncio.Queue[tuple[int, U]] = asyncio.Queue()
-    ctrl_q: asyncio.Queue[tuple[str, int, BaseException | None]] = asyncio.Queue()
-
-    tasks = [
-        asyncio.create_task(_pump_iterator(i, it, data_q, ctrl_q), context=contextvars.copy_context())
-        for i, it in enumerate(iterators)
-    ]
-
-    try:
-        while True:
-            ctrl_task = asyncio.create_task(ctrl_q.get())
-            data_task = asyncio.create_task(data_q.get())
-            done, pending = await asyncio.wait({ctrl_task, data_task}, return_when=asyncio.FIRST_COMPLETED)
-
-            # Priority handling: completion/error signals take precedence over data
-            if ctrl_task in done:
-                _kind, _idx, exc = ctrl_task.result()
-                await _cleanup_tasks(tasks, pending)
-                if exc:
-                    raise exc
-                return
-
-            # Only consume data when no completion/error signal received
-            _, item = data_task.result()
-            for t in pending:
-                t.cancel()
-            yield item
-    finally:
-        await _cleanup_tasks(tasks, set())
 
 
 def get_latest_request_usage(message_history: list[ModelMessage]) -> RequestUsage | None:

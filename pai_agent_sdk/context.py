@@ -61,6 +61,7 @@ import os
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -156,6 +157,9 @@ class ResumableState(BaseModel):
     deferred_tool_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
     """Metadata for deferred tool calls."""
 
+    agent_registry: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """Serialized agent registry for tracking agent metadata."""
+
     def to_subagent_history(self) -> dict[str, list[ModelMessage]]:
         """Deserialize subagent_history to ModelMessage objects.
 
@@ -190,6 +194,8 @@ class ResumableState(BaseModel):
         ctx.user_prompts = list(self.user_prompts)
         ctx.handoff_message = self.handoff_message
         ctx.deferred_tool_metadata = dict(self.deferred_tool_metadata)
+        # Restore agent_registry from serialized format
+        ctx.agent_registry = {agent_id: AgentInfo(**info) for agent_id, info in self.agent_registry.items()}
 
 
 class ToolIdWrapper:
@@ -271,6 +277,46 @@ SubagentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | A
 def _create_stream_queue_factory() -> dict[str, "asyncio.Queue[SubagentStreamEvent]"]:
     """Create a defaultdict factory for subagent stream queues."""
     return defaultdict(asyncio.Queue)
+
+
+# =============================================================================
+# Agent Info and Stream Event
+# =============================================================================
+
+
+@dataclass
+class AgentInfo:
+    """Metadata for a registered agent.
+
+    Used to track agent identity and hierarchy in stream events.
+
+    Attributes:
+        agent_id: Unique identifier for the agent (e.g., "main" or 4-char short ID).
+        agent_name: Human-readable name (e.g., "main", "search", "reasoning").
+        parent_agent_id: ID of the parent agent, None for main agent.
+    """
+
+    agent_id: str
+    agent_name: str
+    parent_agent_id: str | None = None
+
+
+@dataclass
+class StreamEvent:
+    """Stream event with agent identification.
+
+    Wraps raw stream events with agent metadata for distinguishing
+    events from different agents in a merged stream.
+
+    Attributes:
+        agent_id: ID of the agent that produced this event.
+        agent_name: Name of the agent.
+        event: The underlying stream event (ModelResponseStreamEvent, etc.).
+    """
+
+    agent_id: str
+    agent_name: str
+    event: SubagentStreamEvent
 
 
 # =============================================================================
@@ -525,6 +571,13 @@ class AgentContext(BaseModel):
     subagent_history: dict[str, list[ModelMessage]] = Field(default_factory=dict)
     """Subagent history for resuming sessions."""
 
+    agent_registry: dict[str, AgentInfo] = Field(default_factory=dict)
+    """Registry of agent metadata, keyed by agent_id.
+
+    Used by stream_agent to track agent identity and hierarchy.
+    Populated by enter_subagent when subagents are created.
+    """
+
     _agent_name: str = "main"
 
     @property
@@ -624,19 +677,31 @@ class AgentContext(BaseModel):
         """Create a child context for subagent with independent timing.
 
         The subagent context inherits all fields but gets:
-        - A new run_id
+        - A new run_id (uses agent_id if provided, otherwise generates one)
         - parent_run_id set to current run_id
         - Fresh start_at/end_at for independent timing
         - Shared file_operator and shell from parent
+        - Registers agent info in parent's agent_registry
 
         Args:
-            agent_id: ID of the subagent_id, can be tool call ID or UUID.
-            agent_name: Name of the subagent.
+            agent_name: Name of the subagent (e.g., "search", "reasoning").
+            agent_id: ID for the subagent. If None, generates a unique ID.
+                Can be tool_call_id for correlation with tool calls.
             **override: Additional fields to override in the subagent context.
                 Subclasses can pass extra fields without overriding this method.
         """
+        # Generate agent_id if not provided
+        effective_agent_id = agent_id or _generate_run_id()
+
+        # Register agent info in parent's registry
+        self.agent_registry[effective_agent_id] = AgentInfo(
+            agent_id=effective_agent_id,
+            agent_name=agent_name,
+            parent_agent_id=self.run_id,
+        )
+
         update: dict[str, Any] = {
-            "run_id": agent_id or _generate_run_id(),
+            "run_id": effective_agent_id,
             "parent_run_id": self.run_id,
             "start_at": datetime.now(),
             "end_at": None,
@@ -733,12 +798,23 @@ class AgentContext(BaseModel):
         for key, messages in self.subagent_history.items():
             serialized_history[key] = ModelMessagesTypeAdapter.dump_python(messages)
 
+        # Serialize agent_registry to dict format
+        serialized_registry: dict[str, dict[str, Any]] = {
+            agent_id: {
+                "agent_id": info.agent_id,
+                "agent_name": info.agent_name,
+                "parent_agent_id": info.parent_agent_id,
+            }
+            for agent_id, info in self.agent_registry.items()
+        }
+
         return ResumableState(
             subagent_history=serialized_history,
             extra_usages=list(self.extra_usages),
             user_prompts=list(self.user_prompts),
             handoff_message=self.handoff_message,
             deferred_tool_metadata=dict(self.deferred_tool_metadata),
+            agent_registry=serialized_registry,
         )
 
     def with_state(self, state: ResumableState | None) -> "Self":
