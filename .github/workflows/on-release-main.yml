@@ -64,6 +64,9 @@ jobs:
             tag: ${{ github.ref }}
             overwrite: true
 
+      - name: Sync skills folder
+        run: bash scripts/sync-skills.sh
+
       - name: Create SKILL.zip
         run: zip -r SKILL.zip skills
 
