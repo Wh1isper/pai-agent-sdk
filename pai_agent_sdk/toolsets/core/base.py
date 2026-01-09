@@ -83,17 +83,20 @@ class UserInputPreprocessResult(BaseModel):
     """Additional metadata from user input processing."""
 
 
-PreHookFunc = Callable[[RunContext[AgentDepsT], dict[str, Any]], Awaitable[dict[str, Any]]]
-"""Pre-hook function signature: (ctx, tool_args) -> modified_tool_args"""
+CallMetadata = dict[str, Any]
+"""Metadata dictionary shared across hooks within a single call_tool invocation."""
 
-PostHookFunc = Callable[[RunContext[AgentDepsT], Any], Awaitable[Any]]
-"""Post-hook function signature: (ctx, result) -> modified_result"""
+PreHookFunc = Callable[[RunContext[AgentDepsT], dict[str, Any], CallMetadata], Awaitable[dict[str, Any]]]
+"""Pre-hook function signature: (ctx, tool_args, metadata) -> modified_tool_args"""
 
-GlobalPreHookFunc = Callable[[RunContext[AgentDepsT], str, dict[str, Any]], Awaitable[dict[str, Any]]]
-"""Global pre-hook function signature: (ctx, tool_name, tool_args) -> modified_tool_args"""
+PostHookFunc = Callable[[RunContext[AgentDepsT], Any, CallMetadata], Awaitable[Any]]
+"""Post-hook function signature: (ctx, result, metadata) -> modified_result"""
 
-GlobalPostHookFunc = Callable[[RunContext[AgentDepsT], str, Any], Awaitable[Any]]
-"""Global post-hook function signature: (ctx, tool_name, result) -> modified_result"""
+GlobalPreHookFunc = Callable[[RunContext[AgentDepsT], str, dict[str, Any], CallMetadata], Awaitable[dict[str, Any]]]
+"""Global pre-hook function signature: (ctx, tool_name, tool_args, metadata) -> modified_tool_args"""
+
+GlobalPostHookFunc = Callable[[RunContext[AgentDepsT], str, Any, CallMetadata], Awaitable[Any]]
+"""Global post-hook function signature: (ctx, tool_name, result, metadata) -> modified_result"""
 
 
 class GlobalHooks(BaseModel):
@@ -555,6 +558,11 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         Execution order: global_pre -> tool_pre -> execute -> tool_post -> global_post
 
+        A shared metadata dictionary is created at the start of each call_tool invocation
+        and passed to all hooks. This allows hooks to share data within a single tool call:
+        - Pre-hooks can store data (e.g., start_time, tracing spans)
+        - Post-hooks can read that data (e.g., calculate duration, close spans)
+
         Post-hooks receive the result, which may be an Exception instance if the tool
         execution failed. Hooks can:
         - Log/monitor errors by checking `isinstance(result, Exception)`
@@ -570,39 +578,42 @@ class Toolset(BaseToolset[AgentDepsT]):
             raise UserError(msg)
 
         if name in ctx.deps.need_user_approve_tools and not ctx.tool_call_approved:
-            metadata = tool.tool_instance.get_approval_metadata() if tool.tool_instance else None
+            approval_metadata = tool.tool_instance.get_approval_metadata() if tool.tool_instance else None
             logger.debug(f"call_tool: {name!r} requires user approval")
-            raise ApprovalRequired(metadata=metadata)
+            raise ApprovalRequired(metadata=approval_metadata)
 
+        # Create call-scoped metadata dict shared across all hooks
+        metadata: CallMetadata = {}
         args = tool_args
 
         if self.global_hooks.pre:
             logger.debug(f"call_tool: {name!r} executing global pre-hook")
-            args = await self.global_hooks.pre(ctx, name, args)
+            args = await self.global_hooks.pre(ctx, name, args, metadata)
 
         if tool.pre_hook:
             logger.debug(f"call_tool: {name!r} executing tool pre-hook")
-            args = await tool.pre_hook(ctx, args)
+            args = await tool.pre_hook(ctx, args, metadata)
 
         logger.debug(f"call_tool: {name!r} executing tool function")
         try:
             result = await self._call_tool_func(args, ctx, tool)
         except Exception as e:
-            logger.warning(f"call_tool: {name!r} raised exception: {type(e).__name__}")
-            result = f"Error calling tool {name}: {e}"
+            # Let the post-hook handle the exception
+            logger.debug(f"call_tool: {name!r} tool function raised exception: {type(e).__name__}")
+            result = e
 
         if tool.post_hook:
             logger.debug(f"call_tool: {name!r} executing tool post-hook")
-            result = await tool.post_hook(ctx, result)
+            result = await tool.post_hook(ctx, result, metadata)
 
         if self.global_hooks.post:
             logger.debug(f"call_tool: {name!r} executing global post-hook")
-            result = await self.global_hooks.post(ctx, name, result)
+            result = await self.global_hooks.post(ctx, name, result, metadata)
 
-        # Re-raise if result is still an exception after hooks
+        # Wrap into a non-Exception result so won't break the agentic loop
         if isinstance(result, BaseException):
             logger.debug(f"call_tool: {name!r} raising exception: {type(result).__name__}")
-            raise result
+            return f"Error calling tool {name}: {result}"
 
         logger.debug(f"call_tool: {name!r} completed successfully")
         return result

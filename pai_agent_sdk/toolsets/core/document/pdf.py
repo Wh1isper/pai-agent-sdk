@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 # Optional dependency check
 try:
     import pymupdf
+    import pymupdf.layout
     import pymupdf4llm
 except ImportError as e:
     raise ImportError(

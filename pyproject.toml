@@ -42,7 +42,7 @@ examples = ["pydantic-ai",
     "python-dotenv"]
 docker = ["docker>=7.0.0"]
 web = ["tavily-python>=0.7.0", "firecrawl-py>=4.0.0", "markitdown[all]>=0.1.2"]
-document = ["pymupdf>=1.26.0", "pymupdf4llm>=0.2.0", "markitdown[all]>=0.1.2"]
+document = ["pymupdf>=1.26.6", "pymupdf4llm>=0.2.8", "markitdown[all]>=0.1.2", "pymupdf-layout>=1.26.6"]
 all = ["pai-agent-sdk[docker,web,document,examples]"]
 
 [dependency-groups]
@@ -64,8 +64,9 @@ dev = [
     "tavily-python>=0.7.0",
     "firecrawl-py>=4.0.0",
     "markitdown[all]>=0.1.2",
-    "pymupdf>=1.25.0",
-    "pymupdf4llm>=0.0.17",
+    "pymupdf>=1.26.6",
+    "pymupdf4llm>=0.2.8",
+    "pymupdf-layout>=1.26.6",
     # For examples
     "pydantic-ai",
     "python-dotenv",
