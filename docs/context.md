@@ -250,6 +250,51 @@ The base `ResumableState` includes:
 4. **Export state before shutdown**: To enable session resumption
 5. **Validate state before restore**: Use Pydantic's validation when loading from external sources
 
+## ToolIdWrapper
+
+The `ToolIdWrapper` class handles normalization of tool call IDs across different model providers.
+
+### Why Tool ID Wrapping is Needed
+
+Different model providers generate tool call IDs in inconsistent formats:
+
+- **OpenAI**: Uses `call_` prefix (e.g., `call_abc123`)
+- **Anthropic**: Uses `toolu_` prefix (e.g., `toolu_01ABC`)
+- **Google**: Uses different patterns
+
+When resuming sessions across providers or when IDs need to be consistent for external systems (logging, tracing, HITL approval flows), these inconsistencies cause problems:
+
+1. **Session Resumption**: A session started with OpenAI cannot be resumed with Anthropic if tool call IDs are provider-specific
+2. **External Integration**: Systems that track tool calls need stable, predictable IDs
+3. **Deferred Tool Requests**: HITL (Human-in-the-Loop) flows require consistent IDs between request and approval
+
+### How It Works
+
+`ToolIdWrapper` maintains a mapping from original tool call IDs to normalized IDs with a consistent prefix (`pai-`). It wraps:
+
+- **Stream events**: Tool call and result events during streaming
+- **Message history**: Tool call IDs in conversation history for session resumption
+- **Deferred tool requests**: Tool call IDs in HITL approval flows
+
+```python
+# Internal usage in stream_agent
+event = ctx.tool_id_wrapper.wrap_event(event)
+
+# Message history normalization (used by filters)
+history = ctx.tool_id_wrapper.wrap_messages(run_ctx, history)
+
+# Deferred tool requests (HITL)
+result.output = ctx.tool_id_wrapper.wrap_deferred_tool_requests(result.output)
+```
+
+### Usage Notes
+
+The `ToolIdWrapper` is automatically used by the SDK's streaming infrastructure. You typically don't need to interact with it directly unless:
+
+- Building custom streaming implementations
+- Implementing session persistence with external storage
+- Creating custom HITL approval flows
+
 ## Related Documentation
 
 - [Environment Management](environment.md) - FileOperator, Shell, and ResourceRegistry

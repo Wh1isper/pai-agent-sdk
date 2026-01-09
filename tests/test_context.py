@@ -618,6 +618,77 @@ async def test_export_and_with_state_with_data(file_operator: LocalFileOperator,
         assert new_ctx.deferred_tool_metadata == {"tool-1": {"key": "value"}}
 
 
+async def test_export_state_include_subagent_false(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should exclude subagent_history and agent_registry when include_subagent=False."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+    from pydantic_ai.usage import RunUsage
+
+    from pai_agent_sdk.context import ExtraUsageRecord
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        # Set up subagent-related state
+        ctx.subagent_history["agent-1"] = [
+            ModelRequest(parts=[UserPromptPart(content="Hello")]),
+            ModelResponse(parts=[TextPart(content="Hi there")]),
+        ]
+
+        # Simulate entering a subagent to populate agent_registry
+        async with ctx.enter_subagent("search") as child:
+            child.subagent_history["nested-agent"] = [
+                ModelRequest(parts=[UserPromptPart(content="Nested")]),
+            ]
+
+        # Set up non-subagent state
+        ctx.extra_usages.append(
+            ExtraUsageRecord(uuid="test-uuid", agent="search", usage=RunUsage(input_tokens=50, output_tokens=50))
+        )
+        ctx.user_prompts = "Test prompt"
+        ctx.handoff_message = "Handoff summary"
+        ctx.deferred_tool_metadata["tool-1"] = {"key": "value"}
+        ctx.need_user_approve_tools = ["shell", "edit"]
+
+        # Export with include_subagent=False
+        state = ctx.export_state(include_subagent=False)
+
+        # Verify subagent-related fields are empty
+        assert state.subagent_history == {}
+        assert state.agent_registry == {}
+
+        # Verify non-subagent fields are preserved
+        assert len(state.extra_usages) == 1
+        assert state.extra_usages[0].uuid == "test-uuid"
+        assert state.user_prompts == "Test prompt"
+        assert state.handoff_message == "Handoff summary"
+        assert state.deferred_tool_metadata == {"tool-1": {"key": "value"}}
+        assert state.need_user_approve_tools == ["shell", "edit"]
+
+
+async def test_export_state_include_subagent_true_default(file_operator: LocalFileOperator, shell: LocalShell) -> None:
+    """Should include subagent_history and agent_registry when include_subagent=True (default)."""
+    from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+    async with AgentContext(file_operator=file_operator, shell=shell) as ctx:
+        # Set up subagent-related state
+        ctx.subagent_history["agent-1"] = [
+            ModelRequest(parts=[UserPromptPart(content="Hello")]),
+            ModelResponse(parts=[TextPart(content="Hi there")]),
+        ]
+
+        # Simulate entering a subagent to populate agent_registry
+        async with ctx.enter_subagent("search") as _:
+            pass
+
+        # Export with default (include_subagent=True)
+        state_default = ctx.export_state()
+        state_explicit = ctx.export_state(include_subagent=True)
+
+        # Both should include subagent data
+        for state in [state_default, state_explicit]:
+            assert "agent-1" in state.subagent_history
+            assert len(state.subagent_history["agent-1"]) == 2
+            assert len(state.agent_registry) > 0
+
+
 async def test_resumable_state_json_serialization(file_operator: LocalFileOperator, shell: LocalShell) -> None:
     """Should serialize and deserialize ResumableState to/from JSON."""
     from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart

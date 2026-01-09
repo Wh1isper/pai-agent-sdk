@@ -51,7 +51,10 @@ Check out the [examples/](examples/) directory for production-ready patterns:
 
 ## For Agent Users
 
-If you're using an AI agent (e.g., Claude, Cursor) that supports skills, you can download the latest `SKILL.zip` from the [Releases](https://github.com/wh1isper/pai-agent-sdk/releases) page. The skill package is automatically built and uploaded during each release via GitHub Actions.
+If you're using an AI agent (e.g., Claude, Cursor) that supports skills:
+
+- **Clone this repo**: The [SKILL.md](SKILL.md) file in the repository root provides comprehensive guidance for agents
+- **Download release package**: Get the latest `SKILL.zip` from the [Releases](https://github.com/wh1isper/pai-agent-sdk/releases) page (automatically built during each release)
 
 ## Configuration
 

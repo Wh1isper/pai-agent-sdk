@@ -90,24 +90,42 @@ global_pre -> tool_pre -> execute -> tool_post -> global_post
 
 ### Hook Signatures
 
+All hooks receive a shared `metadata` dictionary that persists throughout a single `call_tool` invocation. This enables hooks to share data with each other (e.g., pre-hook stores start time, post-hook calculates duration).
+
 ```python
+from pai_agent_sdk.toolsets import CallMetadata
+
 # Pre-hook: modify arguments before execution
-PreHookFunc = Callable[[RunContext[AgentDepsT], dict[str, Any]], Awaitable[dict[str, Any]]]
+PreHookFunc = Callable[
+    [RunContext[AgentDepsT], dict[str, Any], CallMetadata],
+    Awaitable[dict[str, Any]]
+]
 
 # Post-hook: modify result after execution
-PostHookFunc = Callable[[RunContext[AgentDepsT], Any], Awaitable[Any]]
+PostHookFunc = Callable[
+    [RunContext[AgentDepsT], Any, CallMetadata],
+    Awaitable[Any]
+]
 
 # Global pre-hook: includes tool name
-GlobalPreHookFunc = Callable[[RunContext[AgentDepsT], str, dict[str, Any]], Awaitable[dict[str, Any]]]
+GlobalPreHookFunc = Callable[
+    [RunContext[AgentDepsT], str, dict[str, Any], CallMetadata],
+    Awaitable[dict[str, Any]]
+]
 
 # Global post-hook: includes tool name
-GlobalPostHookFunc = Callable[[RunContext[AgentDepsT], str, Any], Awaitable[Any]]
+GlobalPostHookFunc = Callable[
+    [RunContext[AgentDepsT], str, Any, CallMetadata],
+    Awaitable[Any]
+]
 ```
 
 ### Example: Logging Hook
 
 ```python
-async def logging_post_hook(ctx: RunContext, tool_name: str, result: Any) -> Any:
+async def logging_post_hook(
+    ctx: RunContext, tool_name: str, result: Any, metadata: dict
+) -> Any:
     logger.info(f"Tool {tool_name} returned: {result}")
     return result
 
@@ -115,6 +133,31 @@ toolset = Toolset(
     ctx,
     tools=[...],
     global_hooks=GlobalHooks(post=logging_post_hook),
+)
+```
+
+### Example: Timing with Shared Metadata
+
+```python
+import time
+
+async def timing_pre_hook(
+    ctx: RunContext, tool_name: str, args: dict, metadata: dict
+) -> dict:
+    metadata["start_time"] = time.perf_counter()
+    return args
+
+async def timing_post_hook(
+    ctx: RunContext, tool_name: str, result: Any, metadata: dict
+) -> Any:
+    duration = time.perf_counter() - metadata["start_time"]
+    logger.info(f"Tool {tool_name} took {duration:.3f}s")
+    return result
+
+toolset = Toolset(
+    ctx,
+    tools=[...],
+    global_hooks=GlobalHooks(pre=timing_pre_hook, post=timing_post_hook),
 )
 ```
 
@@ -131,7 +174,9 @@ If the final result after all hooks is still an Exception, it will be raised.
 ### Example: Error Recovery
 
 ```python
-async def error_recovery_hook(ctx: RunContext, result: Any) -> Any:
+async def error_recovery_hook(
+    ctx: RunContext, result: Any, metadata: dict
+) -> Any:
     if isinstance(result, FileNotFoundError):
         return "File not found. Please check the path."
     if isinstance(result, Exception):
@@ -150,7 +195,9 @@ toolset = Toolset(
 ### Example: Error Monitoring
 
 ```python
-async def monitoring_hook(ctx: RunContext, tool_name: str, result: Any) -> Any:
+async def monitoring_hook(
+    ctx: RunContext, tool_name: str, result: Any, metadata: dict
+) -> Any:
     if isinstance(result, Exception):
         metrics.increment(f"tool.{tool_name}.error")
         logger.error(f"Tool {tool_name} failed", exc_info=result)

@@ -8,11 +8,12 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
-rm -rf skills/docs skills/examples
+rm -rf skills
 mkdir -p skills/docs skills/examples
 cp -r docs/* skills/docs/
 cp -r examples/* skills/examples/
 cp examples/.env.example skills/examples/
 cp README.md skills/
+cp SKILL.md skills/
 
-echo "Synced docs, examples and .env.example to skills folder"
+echo "Synced docs, examples, SKILL.md and .env.example to skills folder"

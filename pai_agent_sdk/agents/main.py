@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
-from pydantic_ai import Agent, DeferredToolResults
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai._agent_graph import CallToolsNode, HistoryProcessor, ModelRequestNode
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.models import KnownModelName, Model
@@ -595,7 +595,9 @@ async def stream_agent(  # noqa: C901
                         )
                     )
 
-                await output_queue.put(StreamEvent(agent_id="main", agent_name="main", event=event))
+                await output_queue.put(
+                    StreamEvent(agent_id="main", agent_name="main", event=ctx.tool_id_wrapper.wrap_event(event))
+                )
 
                 # POST EVENT HOOK
                 if post_event_hook:
@@ -692,6 +694,12 @@ async def stream_agent(  # noqa: C901
 
     try:
         yield streamer
+    except Exception as e:
+        logger.exception("Uncaught exception in stream_agent context")
+        streamer.exception = e
+    else:
+        if (run := streamer.run) and (result := run.result) and isinstance(result.output, DeferredToolRequests):
+            result.output = ctx.tool_id_wrapper.wrap_deferred_tool_requests(result.output)
     finally:
         # Wait for tasks to complete and capture any exception
         results = await asyncio.gather(main_task, poll_task, return_exceptions=True)
@@ -703,5 +711,3 @@ async def stream_agent(  # noqa: C901
             streamer.exception = AgentInterrupted("Agent execution was interrupted")
         elif exceptions:
             streamer.exception = exceptions[0]
-
-        streamer.raise_if_exception()

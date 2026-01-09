@@ -80,10 +80,10 @@ def test_global_hooks_empty() -> None:
 def test_global_hooks_with_hooks() -> None:
     """Should accept hook functions."""
 
-    async def pre_hook(ctx: Any, name: str, args: dict) -> dict:
+    async def pre_hook(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
         return args
 
-    async def post_hook(ctx: Any, name: str, result: Any) -> Any:
+    async def post_hook(ctx: Any, name: str, result: Any, metadata: dict) -> Any:
         return result
 
     hooks = GlobalHooks(pre=pre_hook, post=post_hook)
@@ -235,19 +235,19 @@ async def test_toolset_call_tool_with_hooks(agent_context: AgentContext) -> None
     ctx = agent_context
     call_order: list[str] = []
 
-    async def global_pre(ctx: Any, name: str, args: dict) -> dict:
+    async def global_pre(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
         call_order.append("global_pre")
         return args
 
-    async def global_post(ctx: Any, name: str, result: Any) -> Any:
+    async def global_post(ctx: Any, name: str, result: Any, metadata: dict) -> Any:
         call_order.append("global_post")
         return result
 
-    async def tool_pre(ctx: Any, args: dict) -> dict:
+    async def tool_pre(ctx: Any, args: dict, metadata: dict) -> dict:
         call_order.append("tool_pre")
         return args
 
-    async def tool_post(ctx: Any, result: Any) -> Any:
+    async def tool_post(ctx: Any, result: Any, metadata: dict) -> Any:
         call_order.append("tool_post")
         return result
 
@@ -266,6 +266,59 @@ async def test_toolset_call_tool_with_hooks(agent_context: AgentContext) -> None
 
     await toolset.call_tool("dummy_tool", {"message": "test"}, mock_run_ctx, tool)
     assert call_order == ["global_pre", "tool_pre", "tool_post", "global_post"]
+
+
+async def test_toolset_call_tool_metadata_shared_across_hooks(agent_context: AgentContext) -> None:
+    """Should share metadata dict across all hooks in a single call_tool invocation."""
+    ctx = agent_context
+    captured_metadata: list[dict] = []
+
+    async def global_pre(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
+        metadata["global_pre_time"] = "t0"
+        captured_metadata.append(dict(metadata))
+        return args
+
+    async def tool_pre(ctx: Any, args: dict, metadata: dict) -> dict:
+        metadata["tool_pre_time"] = "t1"
+        captured_metadata.append(dict(metadata))
+        return args
+
+    async def tool_post(ctx: Any, result: Any, metadata: dict) -> Any:
+        metadata["tool_post_time"] = "t2"
+        captured_metadata.append(dict(metadata))
+        return result
+
+    async def global_post(ctx: Any, name: str, result: Any, metadata: dict) -> Any:
+        metadata["global_post_time"] = "t3"
+        captured_metadata.append(dict(metadata))
+        return result
+
+    toolset = Toolset(
+        ctx,
+        tools=[DummyTool],
+        pre_hooks={"dummy_tool": tool_pre},
+        post_hooks={"dummy_tool": tool_post},
+        global_hooks=GlobalHooks(pre=global_pre, post=global_post),
+    )
+
+    mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = ctx
+    tools = await toolset.get_tools(mock_run_ctx)
+    tool = tools["dummy_tool"]
+
+    await toolset.call_tool("dummy_tool", {"message": "test"}, mock_run_ctx, tool)
+
+    # Verify metadata accumulates across hooks
+    assert len(captured_metadata) == 4
+    assert captured_metadata[0] == {"global_pre_time": "t0"}
+    assert captured_metadata[1] == {"global_pre_time": "t0", "tool_pre_time": "t1"}
+    assert captured_metadata[2] == {"global_pre_time": "t0", "tool_pre_time": "t1", "tool_post_time": "t2"}
+    assert captured_metadata[3] == {
+        "global_pre_time": "t0",
+        "tool_pre_time": "t1",
+        "tool_post_time": "t2",
+        "global_post_time": "t3",
+    }
 
 
 async def test_toolset_process_hitl_call_approved(agent_context: AgentContext) -> None:
@@ -406,13 +459,13 @@ def test_toolset_subset_with_new_context(agent_context: AgentContext, tmp_path: 
 def test_toolset_subset_inherit_hooks(agent_context: AgentContext) -> None:
     """Should inherit hooks when inherit_hooks=True."""
 
-    async def pre_hook(ctx: Any, args: dict) -> dict:
+    async def pre_hook(ctx: Any, args: dict, metadata: dict) -> dict:
         return args
 
-    async def post_hook(ctx: Any, result: Any) -> Any:
+    async def post_hook(ctx: Any, result: Any, metadata: dict) -> Any:
         return result
 
-    async def global_pre(ctx: Any, name: str, args: dict) -> dict:
+    async def global_pre(ctx: Any, name: str, args: dict, metadata: dict) -> dict:
         return args
 
     ctx = agent_context
@@ -434,7 +487,7 @@ def test_toolset_subset_inherit_hooks(agent_context: AgentContext) -> None:
 def test_toolset_subset_no_inherit_hooks(agent_context: AgentContext) -> None:
     """Should not inherit hooks by default."""
 
-    async def pre_hook(ctx: Any, args: dict) -> dict:
+    async def pre_hook(ctx: Any, args: dict, metadata: dict) -> dict:
         return args
 
     ctx = agent_context
@@ -496,7 +549,7 @@ def test_toolset_with_subagents_preserves_hooks(agent_context: AgentContext) -> 
     """Should preserve hooks in new toolset."""
     from pai_agent_sdk.subagents import SubagentConfig
 
-    async def pre_hook(ctx: Any, args: dict) -> dict:
+    async def pre_hook(ctx: Any, args: dict, metadata: dict) -> dict:
         return args
 
     ctx = agent_context

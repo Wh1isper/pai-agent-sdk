@@ -56,6 +56,8 @@ Example:
     ```
 """
 
+from __future__ import annotations
+
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Sequence
@@ -69,7 +71,18 @@ from xml.dom.minidom import parseString
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from pydantic import BaseModel, Field
-from pydantic_ai import ModelSettings, RunContext, UserContent
+from pydantic_ai import (
+    DeferredToolRequests,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelSettings,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    RunContext,
+    ToolCallPartDelta,
+    UserContent,
+)
 from pydantic_ai.messages import HandleResponseEvent as PydanticHandleResponseEvent
 from pydantic_ai.messages import (
     ModelMessage,
@@ -173,7 +186,7 @@ class ResumableState(BaseModel):
             result[key] = ModelMessagesTypeAdapter.validate_python(messages_data)
         return result
 
-    def restore(self, ctx: "AgentContext") -> None:
+    def restore(self, ctx: AgentContext) -> None:
         """Restore state into an AgentContext.
 
         This method applies the saved state to the given context.
@@ -245,9 +258,30 @@ class ToolIdWrapper:
             self._tool_call_maps[tool_call_id] = f"{self._prefix}{uuid4().hex}"
         return self._tool_call_maps[tool_call_id]
 
+    def wrap_event(self, event: AgentStreamEvent) -> AgentStreamEvent:
+        match event:
+            case FunctionToolCallEvent():
+                event.part.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
+            case FunctionToolResultEvent():
+                event.result.tool_call_id = self.upsert_tool_call_id(event.tool_call_id)
+            case PartStartEvent() | PartEndEvent():
+                if isinstance(event.part, (ToolCallPart, ToolReturnPart, RetryPromptPart)):
+                    event.part.tool_call_id = self.upsert_tool_call_id(event.part.tool_call_id)
+            case PartDeltaEvent():
+                if isinstance(event.delta, ToolCallPartDelta) and event.delta.tool_call_id:
+                    event.delta.tool_call_id = self.upsert_tool_call_id(event.delta.tool_call_id)
+        return event
+
+    def wrap_deferred_tool_requests(self, deferred_tool_requests: DeferredToolRequests) -> DeferredToolRequests:
+        for call in deferred_tool_requests.calls or []:
+            call.tool_call_id = self.upsert_tool_call_id(call.tool_call_id)
+        for approval in deferred_tool_requests.approvals or []:
+            approval.tool_call_id = self.upsert_tool_call_id(approval.tool_call_id)
+        return deferred_tool_requests
+
     def wrap_messages(
         self,
-        _: "RunContext[AgentContext]",
+        _: RunContext[AgentContext],
         message_history: list[ModelMessage],
     ) -> list[ModelMessage]:
         """Normalize all tool call IDs in the message history.
@@ -277,7 +311,7 @@ class ToolIdWrapper:
 AgentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | Any
 
 
-def _create_stream_queue_factory() -> dict[str, "asyncio.Queue[AgentStreamEvent]"]:
+def _create_stream_queue_factory() -> dict[str, asyncio.Queue[AgentStreamEvent]]:
     """Create a defaultdict factory for subagent stream queues."""
     return defaultdict(asyncio.Queue)
 
@@ -608,7 +642,7 @@ class AgentContext(BaseModel):
     tool_id_wrapper: ToolIdWrapper = Field(default_factory=ToolIdWrapper)
     """Tool ID wrapper for normalizing tool call IDs across providers."""
 
-    subagent_stream_queues: dict[str, "asyncio.Queue[AgentStreamEvent]"] = Field(
+    subagent_stream_queues: dict[str, asyncio.Queue[AgentStreamEvent]] = Field(
         default_factory=_create_stream_queue_factory
     )
     """Stream queues for subagent events, keyed by run_id(tool_call_id).
@@ -650,7 +684,7 @@ class AgentContext(BaseModel):
 
     async def get_context_instructions(
         self,
-        run_context: "RunContext[AgentContext] | None" = None,
+        run_context: RunContext[AgentContext] | None = None,
     ) -> str:
         """Return runtime context instructions in XML format.
 
@@ -729,7 +763,7 @@ class AgentContext(BaseModel):
         agent_name: str,
         agent_id: str | None = None,
         **override: Any,
-    ) -> AsyncGenerator["Self", None]:
+    ) -> AsyncGenerator[Self, None]:
         """Create a child context for subagent with independent timing.
 
         The subagent context inherits all fields but gets:
@@ -833,37 +867,49 @@ class AgentContext(BaseModel):
         """Exit the context and record end time."""
         self.end_at = datetime.now()
 
-    def export_state(self) -> ResumableState:
+    def export_state(self, *, include_subagent: bool = True) -> ResumableState:
         """Export resumable session state.
 
         Creates a ResumableState containing all session data that can be
         serialized to JSON and restored later.
+
+        Args:
+            include_subagent: Whether to include subagent history and registry.
+                Defaults to True. Set to False to exclude subagent data,
+                which can reduce state size for main agent-only persistence.
 
         Returns:
             ResumableState instance ready for serialization.
 
         Example::
 
-            # Save to JSON file
+            # Save full state including subagent history
             state = ctx.export_state()
+
+            # Save state without subagent data
+            state = ctx.export_state(include_subagent=False)
+
             with open("session.json", "w") as f:
                 f.write(state.model_dump_json(indent=2))
         """
-        # Serialize subagent_history using ModelMessagesTypeAdapter
-        # Use mode='json' to ensure bytes (e.g., BinaryContent.data) are base64-encoded
         serialized_history: dict[str, list[dict[str, Any]]] = {}
-        for key, messages in self.subagent_history.items():
-            serialized_history[key] = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+        serialized_registry: dict[str, dict[str, Any]] = {}
 
-        # Serialize agent_registry to dict format
-        serialized_registry: dict[str, dict[str, Any]] = {
-            agent_id: {
-                "agent_id": info.agent_id,
-                "agent_name": info.agent_name,
-                "parent_agent_id": info.parent_agent_id,
+        if include_subagent:
+            # Serialize subagent_history using ModelMessagesTypeAdapter
+            # Use mode='json' to ensure bytes (e.g., BinaryContent.data) are base64-encoded
+            for key, messages in self.subagent_history.items():
+                serialized_history[key] = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+
+            # Serialize agent_registry to dict format
+            serialized_registry = {
+                agent_id: {
+                    "agent_id": info.agent_id,
+                    "agent_name": info.agent_name,
+                    "parent_agent_id": info.parent_agent_id,
+                }
+                for agent_id, info in self.agent_registry.items()
             }
-            for agent_id, info in self.agent_registry.items()
-        }
 
         return ResumableState(
             subagent_history=serialized_history,
@@ -875,7 +921,7 @@ class AgentContext(BaseModel):
             need_user_approve_tools=list(self.need_user_approve_tools),
         )
 
-    def with_state(self, state: ResumableState | None) -> "Self":
+    def with_state(self, state: ResumableState | None) -> Self:
         """Restore session state from a ResumableState.
 
         Updates the context with state from a previously exported ResumableState.
