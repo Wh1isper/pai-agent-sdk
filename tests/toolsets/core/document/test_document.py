@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 
 from pai_agent_sdk.context import AgentContext
@@ -111,9 +112,14 @@ async def test_pdf_convert_success(tmp_path: Path, pdf_file: Path) -> None:
 
         result = await tool.call(mock_run_ctx, file_path="dummy.pdf")
         assert result["success"] is True
-        assert "export_path" in result
-        assert "markdown_path" in result
-        assert "total_pages" in result
+        assert result == snapshot({
+            "success": True,
+            "export_path": "export_dummy",
+            "markdown_path": "export_dummy/dummy.md",
+            "total_pages": 1,
+            "converted_pages": 1,
+            "page_range": "1-1",
+        })
 
         # Verify export directory was created
         export_dir = tmp_path / result["export_path"]
@@ -137,6 +143,23 @@ async def test_pdf_convert_page_range(tmp_path: Path, pdf_file: Path) -> None:
         result = await tool.call(mock_run_ctx, file_path="dummy.pdf", page_start=1, page_end=1)
         assert result["success"] is True
         assert result["converted_pages"] == 1
+        assert result == snapshot({
+            "success": True,
+            "export_path": "export_dummy",
+            "markdown_path": "export_dummy/dummy.md",
+            "total_pages": 1,
+            "converted_pages": 1,
+            "page_range": "1-1",
+        })
+
+        # Verify export directory was created
+        export_dir = tmp_path / result["export_path"]
+        assert export_dir.exists()
+        assert (tmp_path / result["markdown_path"]).exists()
+        assert (tmp_path / result["markdown_path"]).read_text() == snapshot("""\
+**Dummy PDF file** \n\
+
+""")
 
 
 # --- Office Convert Tool Tests ---
@@ -213,10 +236,15 @@ async def test_office_convert_docx_success(tmp_path: Path, docx_file: Path) -> N
 
         result = await tool.call(mock_run_ctx, file_path="dummy.docx")
         assert result["success"] is True
-        assert "export_path" in result
-        assert "markdown_path" in result
+        assert result == snapshot({
+            "success": True,
+            "export_path": "export_dummy",
+            "markdown_path": "export_dummy/dummy.md",
+        })
 
         # Verify export directory was created
         export_dir = tmp_path / result["export_path"]
         assert export_dir.exists()
         assert (tmp_path / result["markdown_path"]).exists()
+        assert "这是一首简单的小情歌" in (tmp_path / result["markdown_path"]).read_text()
+        assert "images/" in (tmp_path / result["markdown_path"]).read_text()
