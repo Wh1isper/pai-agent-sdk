@@ -8,8 +8,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
-mkdir -p skills/docs
-mkdir -p skills/examples
+rm -rf skills/docs skills/examples
+mkdir -p skills/docs skills/examples
 cp -r docs/* skills/docs/
 cp -r examples/* skills/examples/
 cp examples/.env.example skills/examples/

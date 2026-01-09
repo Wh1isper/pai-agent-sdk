@@ -14,8 +14,8 @@ from pai_agent_sdk.environment.local import LocalEnvironment, LocalFileOperator,
 def file_operator(tmp_path: Path) -> LocalFileOperator:
     """Create a LocalFileOperator for testing."""
     return LocalFileOperator(
-        allowed_paths=[tmp_path],
         default_path=tmp_path,
+        allowed_paths=[tmp_path],
     )
 
 
@@ -23,8 +23,8 @@ def file_operator(tmp_path: Path) -> LocalFileOperator:
 def shell(tmp_path: Path) -> LocalShell:
     """Create a LocalShell for testing."""
     return LocalShell(
-        allowed_paths=[tmp_path],
         default_cwd=tmp_path,
+        allowed_paths=[tmp_path],
     )
 
 
@@ -146,12 +146,12 @@ async def test_agent_context_get_environment_instructions(file_operator: LocalFi
 async def test_agent_context_subagent_shares_environment(tmp_path: Path) -> None:
     """Subagent should share file_operator and shell with parent."""
     file_op = LocalFileOperator(
-        allowed_paths=[tmp_path],
         default_path=tmp_path,
+        allowed_paths=[tmp_path],
     )
     shell = LocalShell(
-        allowed_paths=[tmp_path],
         default_cwd=tmp_path,
+        allowed_paths=[tmp_path],
     )
     ctx = AgentContext(file_operator=file_op, shell=shell)
 

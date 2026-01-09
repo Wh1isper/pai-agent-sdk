@@ -50,8 +50,6 @@ class DockerShell(Shell):
         self,
         container_id: str,
         container_workdir: str = "/workspace",
-        allowed_paths: list[Path] | None = None,
-        default_cwd: Path | None = None,
         default_timeout: float = 30.0,
     ):
         """Initialize DockerShell.
@@ -59,13 +57,13 @@ class DockerShell(Shell):
         Args:
             container_id: Docker container ID to execute commands in.
             container_workdir: Working directory inside the container.
-            allowed_paths: Allowed paths (for compatibility, not enforced in container).
-            default_cwd: Default working directory (for compatibility).
             default_timeout: Default timeout in seconds.
         """
+        # DockerShell doesn't use allowed_paths or default_cwd from base Shell
+        # since path validation happens inside the container
         super().__init__(
-            allowed_paths=allowed_paths,
-            default_cwd=default_cwd,
+            default_cwd=Path(container_workdir),
+            allowed_paths=None,
             default_timeout=default_timeout,
         )
         self._container_id = container_id
@@ -310,8 +308,8 @@ class DockerEnvironment(Environment):
 
         # Create file operator (local filesystem at mount_dir)
         self._file_operator = LocalFileOperator(
-            allowed_paths=allowed_paths,
             default_path=self._mount_dir,
+            allowed_paths=allowed_paths,
             tmp_dir=tmp_dir_path,
         )
 
@@ -319,8 +317,6 @@ class DockerEnvironment(Environment):
         self._shell = DockerShell(
             container_id=self._container_id,
             container_workdir=self._container_workdir,
-            allowed_paths=allowed_paths,
-            default_cwd=self._mount_dir,
             default_timeout=self._shell_timeout,
         )
 

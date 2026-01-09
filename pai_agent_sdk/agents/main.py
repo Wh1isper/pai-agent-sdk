@@ -11,10 +11,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Any, Generic, cast
 
 import jinja2
-from pydantic_ai import Agent, DeferredToolResults
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai._agent_graph import CallToolsNode, HistoryProcessor, ModelRequestNode
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.models import KnownModelName, Model
@@ -27,10 +27,11 @@ from pai_agent_sdk.agents.models import infer_model
 from pai_agent_sdk.context import (
     AgentContext,
     AgentInfo,
+    AgentStreamEvent,
     ModelConfig,
     ResumableState,
+    RunContextMetadata,
     StreamEvent,
-    SubagentStreamEvent,
     ToolConfig,
 )
 from pai_agent_sdk.environment.base import Environment
@@ -150,6 +151,7 @@ async def create_agent(
     tool_config: ToolConfig | None = None,
     extra_context_kwargs: dict[str, Any] | None = None,
     state: ResumableState | None = None,
+    need_user_approve_tools: Sequence[str] | None = None,
     # --- Toolset ---
     tools: Sequence[type[BaseTool]] | None = None,
     toolsets: Sequence[AbstractToolset[Any]] | None = None,
@@ -175,6 +177,7 @@ async def create_agent(
     output_retries: int = 3,
     defer_model_check: bool = False,
     end_strategy: str = "exhaustive",
+    metadata: RunContextMetadata | None = None,
 ) -> AsyncIterator[AgentRuntime[AgentDepsT, OutputT]]:
     """Create and configure an agent with managed lifecycle.
 
@@ -195,6 +198,7 @@ async def create_agent(
         tool_config: ToolConfig for API keys and tool-specific settings.
         extra_context_kwargs: Additional kwargs passed to context_type constructor.
         state: ResumableState to restore session from. Defaults to None.
+        need_user_approve_tools: Tools requiring user approval before execution.
 
         tools: Sequence of BaseTool classes to include in the toolset.
         toolsets: Additional AbstractToolset instances to include.
@@ -220,6 +224,7 @@ async def create_agent(
         output_retries: Number of retries for output parsing. Defaults to 3.
         defer_model_check: Defer model validation. Defaults to False.
         end_strategy: Strategy for ending agent run. Defaults to "exhaustive".
+        metadata: Optional RunContextMetadata for context management.
 
     Yields:
         AgentRuntime containing env, ctx, and agent.
@@ -274,6 +279,7 @@ async def create_agent(
                 resources=entered_env.resources,
                 model_cfg=effective_model_cfg,
                 tool_config=effective_tool_config,
+                need_user_approve_tools=list(need_user_approve_tools) if need_user_approve_tools else [],
                 **(extra_context_kwargs or {}),
             ).with_state(state)
         )
@@ -356,7 +362,10 @@ async def create_agent(
                 system_prompt=effective_system_prompt,
                 model_settings=model_settings,
                 deps_type=context_type,
-                output_type=output_type,
+                output_type=[
+                    output_type,
+                    DeferredToolRequests,
+                ],
                 tools=agent_tools or (),
                 toolsets=all_toolsets if all_toolsets else None,
                 history_processors=all_processors if all_processors else None,
@@ -364,6 +373,7 @@ async def create_agent(
                 output_retries=output_retries,
                 defer_model_check=defer_model_check,
                 end_strategy=end_strategy,  # type: ignore[arg-type]
+                metadata=cast(dict[str, Any], metadata) if metadata else None,
             ),
             all_toolsets,
         )
@@ -411,7 +421,7 @@ class EventHookContext(Generic[AgentDepsT, OutputT]):
     """
 
     agent_info: AgentInfo
-    event: SubagentStreamEvent
+    event: AgentStreamEvent
     node: ModelRequestNode[AgentDepsT, OutputT] | CallToolsNode[AgentDepsT, OutputT]
     run: AgentRun[AgentDepsT, OutputT]
     output_queue: asyncio.Queue[StreamEvent]
@@ -512,6 +522,7 @@ async def stream_agent(  # noqa: C901
     post_node_hook: NodeHook[AgentDepsT, OutputT] | None = None,
     pre_event_hook: EventHook[AgentDepsT, OutputT] | None = None,
     post_event_hook: EventHook[AgentDepsT, OutputT] | None = None,
+    metadata: RunContextMetadata | None = None,
 ) -> AsyncIterator[AgentStreamer[AgentDepsT, OutputT]]:
     """Stream agent execution with subagent event aggregation.
 
@@ -528,6 +539,7 @@ async def stream_agent(  # noqa: C901
         post_node_hook: Called after node.stream() completes.
         pre_event_hook: Called before each event is yielded.
         post_event_hook: Called after each event is yielded.
+        metadata: Optional RunContextMetadata for context management.
 
     Yields:
         AgentStreamer that can be iterated for StreamEvent objects.
@@ -607,7 +619,11 @@ async def stream_agent(  # noqa: C901
         logger.debug("Main agent task started")
         try:
             async with agent.iter(
-                user_prompt, deps=ctx, message_history=message_history, deferred_tool_results=deferred_tool_results
+                user_prompt,
+                deps=ctx,
+                message_history=message_history,
+                deferred_tool_results=deferred_tool_results,
+                metadata=cast(dict[str, Any], metadata) if metadata else None,
             ) as run:
                 streamer.run = run  # Expose run immediately
                 async for node in run:

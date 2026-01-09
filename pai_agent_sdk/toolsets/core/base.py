@@ -555,6 +555,7 @@ class Toolset(BaseToolset[AgentDepsT]):
 
         if name in ctx.deps.need_user_approve_tools and not ctx.tool_call_approved:
             metadata = tool.tool_instance.get_approval_metadata() if tool.tool_instance else None
+            logger.debug(f"call_tool: {name!r} requires user approval")
             raise ApprovalRequired(metadata=metadata)
 
         args = tool_args

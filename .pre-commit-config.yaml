@@ -1,16 +1,4 @@
-ci:
-  skip: [sync-skills]
-
 repos:
-  - repo: local
-    hooks:
-      - id: sync-skills
-        name: Sync docs and .env.example to skills folder
-        entry: bash scripts/sync-skills.sh
-        language: system
-        pass_filenames: false
-        files: ^(docs/|README\.md|llms.*\.txt|\.env\.example)
-        stages: [pre-commit]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v6.0.0"
     hooks:
@@ -30,7 +18,7 @@ repos:
     hooks:
       - id: mdformat
         args: [--number]
-        exclude: ^pai_agent_sdk/
+        exclude: ^(pai_agent_sdk/.*\.md|examples/.*\.md)$
         additional_dependencies:
           [mdformat-gfm, mdformat-front-matters, mdformat-footnote]
   - repo: https://github.com/astral-sh/ruff-pre-commit

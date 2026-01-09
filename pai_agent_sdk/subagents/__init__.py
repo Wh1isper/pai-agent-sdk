@@ -65,12 +65,6 @@ from pai_agent_sdk.subagents.factory import (
     create_subagent_tool_from_markdown,
     load_subagent_tools_from_dir,
 )
-from pai_agent_sdk.subagents.presets import (
-    ModelSettingsPreset,
-    get_model_settings,
-    list_presets,
-    resolve_model_settings,
-)
 from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from pai_agent_sdk.toolsets.core.subagent import create_subagent_call_func, create_subagent_tool
 
@@ -137,19 +131,15 @@ def load_builtin_subagent_tools(
 
 __all__ = [
     "INHERIT",
-    "ModelSettingsPreset",
     "SubagentConfig",
     "create_subagent_call_func",
     "create_subagent_tool",
     "create_subagent_tool_from_config",
     "create_subagent_tool_from_markdown",
     "get_builtin_subagent_configs",
-    "get_model_settings",
-    "list_presets",
     "load_builtin_subagent_tools",
     "load_subagent_from_file",
     "load_subagent_tools_from_dir",
     "load_subagents_from_dir",
     "parse_subagent_markdown",
-    "resolve_model_settings",
 ]

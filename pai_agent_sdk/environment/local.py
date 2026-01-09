@@ -43,16 +43,27 @@ class LocalFileOperator(FileOperator):
 
     def __init__(
         self,
+        default_path: Path,
         allowed_paths: list[Path] | None = None,
-        default_path: Path | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = 3,
         tmp_dir: Path | None = None,
         tmp_file_operator: TmpFileOperator | None = None,
     ):
+        """Initialize LocalFileOperator.
+
+        Args:
+            default_path: Default working directory for operations. Required.
+            allowed_paths: Directories accessible for file operations.
+                If None, defaults to [default_path].
+            instructions_skip_dirs: Directories to skip in file tree generation.
+            instructions_max_depth: Maximum depth for file tree generation.
+            tmp_dir: Directory for temporary files.
+            tmp_file_operator: Operator for tmp file operations.
+        """
         super().__init__(
-            allowed_paths=allowed_paths,
             default_path=default_path,
+            allowed_paths=allowed_paths,
             instructions_skip_dirs=instructions_skip_dirs,
             instructions_max_depth=instructions_max_depth,
             tmp_dir=tmp_dir,
@@ -318,14 +329,21 @@ class LocalShell(Shell):
 
     def __init__(
         self,
+        default_cwd: Path,
         allowed_paths: list[Path] | None = None,
-        default_cwd: Path | None = None,
         default_timeout: float = 30.0,
     ):
-        """Initialize LocalShell."""
+        """Initialize LocalShell.
+
+        Args:
+            default_cwd: Default working directory for command execution. Required.
+            allowed_paths: Directories allowed as working directories.
+                If None, defaults to [default_cwd].
+            default_timeout: Default timeout in seconds.
+        """
         super().__init__(
-            allowed_paths=allowed_paths,
             default_cwd=default_cwd,
+            allowed_paths=allowed_paths,
             default_timeout=default_timeout,
         )
 
@@ -496,19 +514,26 @@ class LocalEnvironment(Environment):
             )
             tmp_dir_path = Path(self._tmp_dir_obj.name)
 
+        # Determine default_path: use provided value or fall back to cwd
+        default_path = self._default_path if self._default_path is not None else Path.cwd()
+
+        # Build allowed_paths list, ensuring default_path is included
         allowed = list(self._allowed_paths) if self._allowed_paths else []
         if tmp_dir_path:
             allowed.append(tmp_dir_path)
+        # Ensure default_path is in allowed_paths
+        if default_path.resolve() not in [p.resolve() for p in allowed]:
+            allowed.append(default_path)
 
         self._file_operator = LocalFileOperator(
+            default_path=default_path,
             allowed_paths=allowed or None,
-            default_path=self._default_path,
             tmp_dir=tmp_dir_path,
         )
 
         self._shell = LocalShell(
+            default_cwd=default_path,
             allowed_paths=allowed or None,
-            default_cwd=self._default_path,
             default_timeout=self._shell_timeout,
         )
 

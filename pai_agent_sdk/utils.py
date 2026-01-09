@@ -15,7 +15,6 @@ from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
     from pai_agent_sdk.context import AgentContext
-    from pai_agent_sdk.toolsets.core.base import InstructableToolset
 
 P = typing.ParamSpec("P")
 T = typing.TypeVar("T")
@@ -70,6 +69,7 @@ def add_toolset_instructions(
 
     TODO: Skip subclasses of AbstractToolset when https://github.com/pydantic/pydantic-ai/pull/3780 merged
     """
+    from pai_agent_sdk.toolsets.core.base import InstructableToolset
 
     @agent.instructions
     def _(ctx: RunContext[AgentDepsT]) -> str | None:

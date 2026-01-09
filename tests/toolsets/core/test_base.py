@@ -1,5 +1,6 @@
 """Tests for pai_agent_sdk.toolsets.base module."""
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -383,7 +384,7 @@ def test_toolset_subset_specific_tools(agent_context: AgentContext) -> None:
     assert "another_tool" not in subset.tool_names
 
 
-def test_toolset_subset_with_new_context(agent_context: AgentContext) -> None:
+def test_toolset_subset_with_new_context(agent_context: AgentContext, tmp_path: Path) -> None:
     """Should use new context when provided."""
     ctx1 = agent_context
 
@@ -391,8 +392,8 @@ def test_toolset_subset_with_new_context(agent_context: AgentContext) -> None:
     from pai_agent_sdk.environment.local import LocalFileOperator, LocalShell
 
     ctx2 = AgentContext(
-        file_operator=LocalFileOperator(),
-        shell=LocalShell(),
+        file_operator=LocalFileOperator(default_path=tmp_path),
+        shell=LocalShell(default_cwd=tmp_path),
     )
 
     toolset = Toolset(ctx1, tools=[DummyTool])

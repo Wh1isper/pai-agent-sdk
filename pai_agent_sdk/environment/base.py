@@ -561,6 +561,7 @@ class FileOperator(ABC):
         tmp_operator = LocalTmpFileOperator(tmp_dir)
 
         main_operator = MyCustomOperator(
+            default_path=Path("/data"),
             allowed_paths=[Path("/data"), tmp_dir],
             tmp_file_operator=tmp_operator,
         )
@@ -575,19 +576,26 @@ class FileOperator(ABC):
 
     def __init__(
         self,
+        default_path: Path,
         allowed_paths: list[Path] | None = None,
-        default_path: Path | None = None,
         instructions_skip_dirs: frozenset[str] | None = None,
         instructions_max_depth: int = DEFAULT_INSTRUCTIONS_MAX_DEPTH,
         tmp_dir: Path | None = None,
         tmp_file_operator: TmpFileOperator | None = None,
     ):
-        if default_path is not None:
-            self._default_path = default_path.resolve()
-        elif allowed_paths:
-            self._default_path = allowed_paths[0].resolve()
-        else:
-            self._default_path = Path.cwd().resolve()
+        """Initialize FileOperator.
+
+        Args:
+            default_path: Default working directory for operations. Required.
+            allowed_paths: Directories accessible for file operations.
+                If None, defaults to [default_path].
+                default_path is always included in allowed_paths.
+            instructions_skip_dirs: Directories to skip in file tree generation.
+            instructions_max_depth: Maximum depth for file tree generation.
+            tmp_dir: Directory for temporary files.
+            tmp_file_operator: Operator for tmp file operations.
+        """
+        self._default_path = default_path.resolve()
 
         if allowed_paths is None:
             self._allowed_paths = [self._default_path]
@@ -1038,26 +1046,20 @@ class Shell(ABC):
 
     def __init__(
         self,
+        default_cwd: Path,
         allowed_paths: list[Path] | None = None,
-        default_cwd: Path | None = None,
         default_timeout: float = 30.0,
     ):
         """Initialize Shell.
 
         Args:
-            allowed_paths: Directories allowed as working directories.
-                If None, defaults to [default_cwd] or [cwd()].
-            default_cwd: Default working directory for command execution.
+            default_cwd: Default working directory for command execution. Required.
                 Always included in allowed_paths.
+            allowed_paths: Directories allowed as working directories.
+                If None, defaults to [default_cwd].
             default_timeout: Default timeout in seconds.
         """
-        # Determine default_cwd first
-        if default_cwd is not None:
-            self._default_cwd = default_cwd.resolve()
-        elif allowed_paths:
-            self._default_cwd = allowed_paths[0].resolve()
-        else:
-            self._default_cwd = Path.cwd().resolve()
+        self._default_cwd = default_cwd.resolve()
 
         # Build allowed_paths, ensuring default_cwd is included
         if allowed_paths is None:

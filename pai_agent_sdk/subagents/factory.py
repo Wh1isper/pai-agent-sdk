@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai import Agent
 
 from pai_agent_sdk.context import AgentContext
+from pai_agent_sdk.presets import resolve_model_settings
 from pai_agent_sdk.subagents.config import (
     INHERIT,
     SubagentConfig,
@@ -18,7 +19,6 @@ from pai_agent_sdk.subagents.config import (
     load_subagents_from_dir,
     parse_subagent_markdown,
 )
-from pai_agent_sdk.subagents.presets import resolve_model_settings
 from pai_agent_sdk.toolsets.core.base import BaseTool, Toolset
 from pai_agent_sdk.toolsets.core.subagent import create_subagent_call_func, create_subagent_tool
 

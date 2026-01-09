@@ -17,15 +17,15 @@ from pai_agent_sdk.environment import (
 # --- LocalFileOperator Tests ---
 
 
-def test_file_operator_default_initialization() -> None:
-    """Should initialize with cwd as default."""
-    op = LocalFileOperator()
-    assert op._default_path == Path.cwd().resolve()
+def test_file_operator_default_initialization(tmp_path: Path) -> None:
+    """Should initialize with provided default_path."""
+    op = LocalFileOperator(default_path=tmp_path)
+    assert op._default_path == tmp_path.resolve()
 
 
 def test_file_operator_custom_allowed_paths(tmp_path: Path) -> None:
     """Should accept custom allowed paths."""
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert tmp_path.resolve() in op._allowed_paths
 
 
@@ -41,69 +41,69 @@ def test_file_operator_default_path_included_in_allowed(tmp_path: Path) -> None:
 async def test_file_operator_read_file(tmp_path: Path) -> None:
     """Should read file content."""
     (tmp_path / "test.txt").write_text("hello world")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_file("test.txt") == "hello world"
 
 
 async def test_file_operator_read_file_with_offset(tmp_path: Path) -> None:
     """Should read file content from character offset."""
     (tmp_path / "test.txt").write_text("hello world")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_file("test.txt", offset=6) == "world"
 
 
 async def test_file_operator_read_file_with_length(tmp_path: Path) -> None:
     """Should read limited characters from file."""
     (tmp_path / "test.txt").write_text("hello world")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_file("test.txt", length=5) == "hello"
 
 
 async def test_file_operator_read_file_with_offset_and_length(tmp_path: Path) -> None:
     """Should read substring with offset and length."""
     (tmp_path / "test.txt").write_text("hello world")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_file("test.txt", offset=3, length=5) == "lo wo"
 
 
 async def test_file_operator_read_bytes(tmp_path: Path) -> None:
     """Should read file as bytes."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_bytes("test.bin") == b"\x00\x01\x02"
 
 
 async def test_file_operator_read_bytes_with_offset(tmp_path: Path) -> None:
     """Should read bytes from offset."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02\x03\x04")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_bytes("test.bin", offset=2) == b"\x02\x03\x04"
 
 
 async def test_file_operator_read_bytes_with_length(tmp_path: Path) -> None:
     """Should read limited bytes."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02\x03\x04")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_bytes("test.bin", length=3) == b"\x00\x01\x02"
 
 
 async def test_file_operator_read_bytes_with_offset_and_length(tmp_path: Path) -> None:
     """Should read byte slice with offset and length."""
     (tmp_path / "test.bin").write_bytes(b"\x00\x01\x02\x03\x04")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.read_bytes("test.bin", offset=1, length=3) == b"\x01\x02\x03"
 
 
 async def test_file_operator_write_file_string(tmp_path: Path) -> None:
     """Should write string content."""
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.write_file("output.txt", "test content")
     assert (tmp_path / "output.txt").read_text() == "test content"
 
 
 async def test_file_operator_write_file_bytes(tmp_path: Path) -> None:
     """Should write bytes content."""
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.write_file("output.bin", b"\x00\x01\x02")
     assert (tmp_path / "output.bin").read_bytes() == b"\x00\x01\x02"
 
@@ -111,7 +111,7 @@ async def test_file_operator_write_file_bytes(tmp_path: Path) -> None:
 async def test_file_operator_append_file(tmp_path: Path) -> None:
     """Should append content to file."""
     (tmp_path / "test.txt").write_text("hello")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.append_file("test.txt", " world")
     assert (tmp_path / "test.txt").read_text() == "hello world"
 
@@ -119,7 +119,7 @@ async def test_file_operator_append_file(tmp_path: Path) -> None:
 async def test_file_operator_delete_file(tmp_path: Path) -> None:
     """Should delete file."""
     (tmp_path / "test.txt").write_text("hello")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.delete("test.txt")
     assert not (tmp_path / "test.txt").exists()
 
@@ -129,7 +129,7 @@ async def test_file_operator_list_dir(tmp_path: Path) -> None:
     (tmp_path / "a.txt").touch()
     (tmp_path / "b.txt").touch()
     (tmp_path / "subdir").mkdir()
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     entries = await op.list_dir(".")
     assert set(entries) == {"a.txt", "b.txt", "subdir"}
 
@@ -137,7 +137,7 @@ async def test_file_operator_list_dir(tmp_path: Path) -> None:
 async def test_file_operator_exists(tmp_path: Path) -> None:
     """Should check path existence."""
     (tmp_path / "exists.txt").touch()
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.exists("exists.txt") is True
     assert await op.exists("not_exists.txt") is False
 
@@ -146,7 +146,7 @@ async def test_file_operator_is_file_and_is_dir(tmp_path: Path) -> None:
     """Should distinguish files and directories."""
     (tmp_path / "file.txt").touch()
     (tmp_path / "subdir").mkdir()
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     assert await op.is_file("file.txt") is True
     assert await op.is_dir("file.txt") is False
     assert await op.is_file("subdir") is False
@@ -155,14 +155,14 @@ async def test_file_operator_is_file_and_is_dir(tmp_path: Path) -> None:
 
 async def test_file_operator_mkdir(tmp_path: Path) -> None:
     """Should create directory."""
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.mkdir("new_dir")
     assert (tmp_path / "new_dir").is_dir()
 
 
 async def test_file_operator_mkdir_parents(tmp_path: Path) -> None:
     """Should create nested directories with parents=True."""
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.mkdir("a/b/c", parents=True)
     assert (tmp_path / "a" / "b" / "c").is_dir()
 
@@ -170,7 +170,7 @@ async def test_file_operator_mkdir_parents(tmp_path: Path) -> None:
 async def test_file_operator_move(tmp_path: Path) -> None:
     """Should move file."""
     (tmp_path / "src.txt").write_text("content")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.move("src.txt", "dst.txt")
     assert not (tmp_path / "src.txt").exists()
     assert (tmp_path / "dst.txt").read_text() == "content"
@@ -179,7 +179,7 @@ async def test_file_operator_move(tmp_path: Path) -> None:
 async def test_file_operator_copy(tmp_path: Path) -> None:
     """Should copy file."""
     (tmp_path / "src.txt").write_text("content")
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     await op.copy("src.txt", "dst.txt")
     assert (tmp_path / "src.txt").read_text() == "content"
     assert (tmp_path / "dst.txt").read_text() == "content"
@@ -187,14 +187,14 @@ async def test_file_operator_copy(tmp_path: Path) -> None:
 
 async def test_file_operator_path_not_allowed_error(tmp_path: Path) -> None:
     """Should raise PathNotAllowedError for paths outside allowed dirs."""
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     with pytest.raises(PathNotAllowedError):
         await op.read_file("/etc/passwd")
 
 
 async def test_file_operator_file_operation_error(tmp_path: Path) -> None:
     """Should raise FileOperationError for failed operations."""
-    op = LocalFileOperator(allowed_paths=[tmp_path], default_path=tmp_path)
+    op = LocalFileOperator(default_path=tmp_path, allowed_paths=[tmp_path])
     with pytest.raises(FileOperationError) as exc_info:
         await op.read_file("not_exists.txt")
     assert "file not found" in str(exc_info.value)
@@ -233,24 +233,24 @@ README.md
 # --- LocalShell Tests ---
 
 
-def test_shell_default_initialization() -> None:
-    """Should initialize with cwd as default."""
-    shell = LocalShell()
-    assert shell._default_cwd == Path.cwd().resolve()
+def test_shell_default_initialization(tmp_path: Path) -> None:
+    """Should initialize with provided default_cwd."""
+    shell = LocalShell(default_cwd=tmp_path)
+    assert shell._default_cwd == tmp_path.resolve()
 
 
 def test_shell_default_cwd_included_in_allowed(tmp_path: Path) -> None:
     """Should ensure default_cwd is in allowed_paths."""
     other_path = tmp_path / "other"
     other_path.mkdir()
-    shell = LocalShell(allowed_paths=[other_path], default_cwd=tmp_path)
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[other_path])
     assert tmp_path.resolve() in shell._allowed_paths
     assert other_path.resolve() in shell._allowed_paths
 
 
 async def test_shell_execute_simple_command(tmp_path: Path) -> None:
     """Should execute simple command."""
-    shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     exit_code, stdout, _ = await shell.execute("echo hello")
     assert exit_code == 0
     assert "hello" in stdout
@@ -260,7 +260,7 @@ async def test_shell_execute_with_cwd(tmp_path: Path) -> None:
     """Should execute command in specified directory."""
     subdir = tmp_path / "subdir"
     subdir.mkdir()
-    shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     exit_code, stdout, _ = await shell.execute("pwd", cwd=str(subdir))
     assert exit_code == 0
     assert "subdir" in stdout
@@ -268,21 +268,21 @@ async def test_shell_execute_with_cwd(tmp_path: Path) -> None:
 
 async def test_shell_execute_cwd_not_allowed(tmp_path: Path) -> None:
     """Should raise PathNotAllowedError for cwd outside allowed dirs."""
-    shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     with pytest.raises(PathNotAllowedError):
         await shell.execute("ls", cwd="/etc")
 
 
 async def test_shell_execute_timeout(tmp_path: Path) -> None:
     """Should raise ShellTimeoutError on timeout."""
-    shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     with pytest.raises(ShellTimeoutError):
         await shell.execute("sleep 10", timeout=0.1)
 
 
 async def test_shell_execute_command_not_found(tmp_path: Path) -> None:
     """Should return non-zero exit code for non-existent command."""
-    shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     exit_code, _, stderr = await shell.execute("nonexistent_command_xyz")
     assert exit_code != 0
     assert "not found" in stderr.lower()
@@ -290,7 +290,7 @@ async def test_shell_execute_command_not_found(tmp_path: Path) -> None:
 
 async def test_shell_execute_returns_stderr(tmp_path: Path) -> None:
     """Should capture stderr."""
-    shell = LocalShell(allowed_paths=[tmp_path], default_cwd=tmp_path)
+    shell = LocalShell(default_cwd=tmp_path, allowed_paths=[tmp_path])
     exit_code, _, stderr = await shell.execute("ls nonexistent_file_xyz")
     assert exit_code != 0
     assert stderr
@@ -299,8 +299,8 @@ async def test_shell_execute_returns_stderr(tmp_path: Path) -> None:
 async def test_shell_get_context_instructions() -> None:
     """Should return context instructions in XML format."""
     shell = LocalShell(
-        allowed_paths=[Path("/workspace")],
         default_cwd=Path("/workspace"),
+        allowed_paths=[Path("/workspace")],
         default_timeout=30.0,
     )
     instructions = await shell.get_context_instructions()

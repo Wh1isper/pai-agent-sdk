@@ -60,7 +60,14 @@ class ColoredFormatter(logging.Formatter):
         location = f"{self.COLORS['CYAN']}{name}:{record.funcName}:{record.lineno}{self.COLORS['RESET']}"
         colored_message = f"{self.COLORS.get(level, '')}{record.getMessage()}{self.COLORS['RESET']}"
 
-        return f"{colored_timestamp} | {colored_level} | {location} - {colored_message}"
+        formatted = f"{colored_timestamp} | {colored_level} | {location} - {colored_message}"
+
+        # Handle exception info (for logger.exception() calls)
+        if record.exc_info:
+            exc_text = self.formatException(record.exc_info)
+            formatted = f"{formatted}\n{self.COLORS.get(level, '')}{exc_text}{self.COLORS['RESET']}"
+
+        return formatted
 
 
 def _get_module_log_level(module_path: str) -> int | None:

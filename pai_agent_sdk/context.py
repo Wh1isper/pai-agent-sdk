@@ -63,6 +63,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import uuid4
 from xml.dom.minidom import parseString
@@ -275,10 +276,10 @@ class ToolIdWrapper:
 
 # Subagent stream event type for the queue
 # Includes pydantic-ai events + Any for user-defined custom events
-SubagentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | Any
+AgentStreamEvent = ModelResponseStreamEvent | PydanticHandleResponseEvent | Any
 
 
-def _create_stream_queue_factory() -> dict[str, "asyncio.Queue[SubagentStreamEvent]"]:
+def _create_stream_queue_factory() -> dict[str, "asyncio.Queue[AgentStreamEvent]"]:
     """Create a defaultdict factory for subagent stream queues."""
     return defaultdict(asyncio.Queue)
 
@@ -320,7 +321,7 @@ class StreamEvent:
 
     agent_id: str
     agent_name: str
-    event: SubagentStreamEvent
+    event: AgentStreamEvent
 
 
 # =============================================================================
@@ -569,10 +570,10 @@ class AgentContext(BaseModel):
     handoff_message: str | None = None
     """Rendered handoff message to be injected into new context after handoff."""
 
-    file_operator: FileOperator = Field(default_factory=lambda: LocalFileOperator())
+    file_operator: FileOperator = Field(default_factory=lambda: LocalFileOperator(default_path=Path.cwd()))
     """File operator for file system operations. Provided by Environment."""
 
-    shell: Shell = Field(default_factory=lambda: LocalShell())
+    shell: Shell = Field(default_factory=lambda: LocalShell(default_cwd=Path.cwd()))
     """Shell executor for command execution. Provided by Environment."""
 
     resources: ResourceRegistry = Field(default_factory=ResourceRegistry)
@@ -593,12 +594,12 @@ class AgentContext(BaseModel):
     tool_id_wrapper: ToolIdWrapper = Field(default_factory=ToolIdWrapper)
     """Tool ID wrapper for normalizing tool call IDs across providers."""
 
-    subagent_stream_queues: dict[str, "asyncio.Queue[SubagentStreamEvent]"] = Field(
+    subagent_stream_queues: dict[str, "asyncio.Queue[AgentStreamEvent]"] = Field(
         default_factory=_create_stream_queue_factory
     )
     """Stream queues for subagent events, keyed by run_id(tool_call_id).
 
-    Each queue receives SubagentStreamEvent instances during subagent execution,
+    Each queue receives AgentStreamEvent instances during subagent execution,
     enabling real-time streaming of subagent responses.
     """
 
