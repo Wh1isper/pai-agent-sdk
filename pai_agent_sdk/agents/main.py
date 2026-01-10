@@ -336,7 +336,7 @@ async def create_agent(
                     history_processors=[*ctx.get_history_processors()],
                 )
 
-            all_toolsets.append(core_toolset)
+        all_toolsets.append(core_toolset)
 
         # Add user-provided toolsets
         if toolsets:
